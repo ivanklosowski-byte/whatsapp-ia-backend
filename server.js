@@ -9,9 +9,24 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-// CONFIGURAÇÃO DOS SERVIÇOS
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+
+// FUNÇÃO DE BUSCA NA PLANILHA
+async function buscarNaPlanilha(termo) {
+  try {
+    const { data, error } = await supabase
+      .from('produtos')
+      .select('Descricao, "Preco Vista"')
+      .ilike('Descricao', `%${termo}%`)
+      .limit(3);
+    
+    if (data && data.length > 0) {
+      return data.map(p => `- ${p.Descricao}: R$ ${p['Preco Vista']}`).join('\n');
+    }
+    return null;
+  } catch (e) { return null; }
+}
 
 app.post("/webhook", async (req, res) => {
   const twiml = new twilio.twiml.MessagingResponse();
@@ -19,45 +34,48 @@ app.post("/webhook", async (req, res) => {
   const mensagemUsuario = req.body.Body;
 
   try {
-    // 1. BUSCA HISTÓRICO NO SUPABASE (MEMÓRIA)
-    let { data: historico } = await supabase
-      .from("historico_mensagens")
-      .select("role, content")
-      .eq("phone_number", numCliente)
-      .order("created_at", { ascending: true })
-      .limit(10);
+    // 1. Busca histórico e tenta encontrar preço na planilha
+    let { data: historico } = await supabase.from("historico_mensagens").select("role, content").eq("phone_number", numCliente).order("created_at", { ascending: true }).limit(5);
+    const precosEncontrados = await buscarNaPlanilha(mensagemUsuario);
 
-    // 2. O NOVO CÉREBRO DO LUBRIBOT (FOCO EM CUSTO-BENEFÍCIO)
+    // 2. Prompt com os dados da sua planilha
     const promptEspecialista = `
-      Você é o LubriBot, o especialista técnico da PerfectLub Centro Automotivo. 
-      Sua missão é vender serviços de troca de óleo com o melhor CUSTO-BENEFÍCIO.
-
-      MARCAS DE ÓLEO QUE TRABALHAMOS:
-      - Lubrax (Principal recomendação para custo-benefício)
-      - Shell e Petronas (Linha Premium)
-      - Motorcraft (Recomendado para veículos Ford)
-      - Total (Excelente para diversas aplicações)
-
-      FILTROS:
-      - Trabalhamos exclusivamente com filtros WEGA e TECFIL (linha de montagem).
-
-      REGRAS DE OURO:
-      - NÃO oferecemos mais a marca Motul. Focamos em Lubrax, Shell e Petronas.
-      - Nunca sugira procurar outra oficina. Você é a solução para o cliente.
-      - Para o Camaro 2011: Use óleo 5W30 (Petronas ou Shell) - Kit com 7.6L + Filtro por R$ 850,00.
-      - Sempre tente fechar o agendamento: "Podemos reservar um horário para você hoje ou prefere amanhã?"
-      - Se não tiver o preço exato de um carro, peça o modelo e motorização (1.0, 1.6, etc).
-
-      RECURSOS TÉCNICOS:
-      - Use emojis: 🛢️, 🚗, 🔧, ✅, 💨.
+      Você é o LubriBot da PerfectLub. 
+      MARCAS: Lubrax, Shell, Petronas, Motorcraft e Total. Filtros Wega/Tecfil.
+      
+      DADOS DA PLANILHA (Use se for relevante):
+      ${precosEncontrados ? precosEncontrados : "Nenhum produto específico encontrado na busca rápida."}
+      
+      DIRETRIZES:
+      - Se o preço acima for relevante, informe-o ao cliente.
+      - Se for troca de óleo, adicione a Mão de Obra (R$ 60,00 conforme sua tabela).
+      - Foque no custo-benefício e tente agendar o serviço.
     `;
 
-    // 3. MONTAGEM DO CONTEXTO PARA A IA
-    const messages = [
-      { role: "system", content: promptEspecialista },
-      ...(historico || []).map(m => ({ role: m.role, content: m.content })),
-      { role: "user", content: mensagemUsuario }
-    ];
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: promptEspecialista },
+        ...(historico || []).map(m => ({ role: m.role, content: m.content })),
+        { role: "user", content: mensagemUsuario }
+      ],
+      temperature: 0.5
+    });
 
-    // 4. CHAMADA DA IA (MODELO RÁPIDO E EFICIENTE)
-    const completion =
+    const respostaIA = completion.choices[0].message.content;
+
+    await supabase.from("historico_mensagens").insert([
+      { phone_number: numCliente, role: "user", content: mensagemUsuario },
+      { phone_number: numCliente, role: "assistant", content: respostaIA }
+    ]);
+
+    twiml.message(respostaIA);
+  } catch (error) {
+    twiml.message("Olá! Tivemos um pequeno erro, mas a equipe da PerfectLub já vai te atender! 🚗");
+  }
+  res.writeHead(200, { "Content-Type": "text/xml" });
+  res.end(twiml.toString());
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("🚀 LubriBot conectado à Planilha de Valores!"));
