@@ -14,31 +14,51 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 
+app.get("/", (req, res) => {
+  res.send("Servidor WhatsApp IA funcionando")
+})
+
 app.post("/webhook", async (req, res) => {
 
-  const message = req.body.Body
+  try {
 
-  const ai = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      { role: "system", content: "Você responde clientes no WhatsApp de forma educada." },
-      { role: "user", content: message }
-    ]
-  })
+    const message = req.body.Body
 
-  const reply = ai.choices[0].message.content
+    const ai = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "Você é um assistente educado que responde clientes no WhatsApp."
+        },
+        {
+          role: "user",
+          content: message
+        }
+      ]
+    })
 
-  const twiml = new twilio.twiml.MessagingResponse()
+    const reply = ai.choices[0].message.content
 
-  twiml.message(reply)
+    const twiml = new twilio.twiml.MessagingResponse()
 
-  res.writeHead(200, { "Content-Type": "text/xml" })
-  res.end(twiml.toString())
+    twiml.message(reply)
+
+    res.writeHead(200, { "Content-Type": "text/xml" })
+    res.end(twiml.toString())
+
+  } catch (error) {
+
+    console.error(error)
+
+    res.send("Erro no servidor")
+
+  }
 
 })
 
 const PORT = process.env.PORT || 3000
 
 app.listen(PORT, () => {
-  console.log("Servidor rodando")
+  console.log("Servidor rodando na porta " + PORT)
 })
