@@ -9,7 +9,6 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-// 1. CONEXÃO COM OS SERVIÇOS (Pegando do Environment do Render)
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
@@ -19,60 +18,40 @@ app.post("/webhook", async (req, res) => {
   const mensagemUsuario = req.body.Body;
 
   try {
-    // 2. BUSCAR HISTÓRICO NO SUPABASE (Memória do Cliente)
-    let { data: mensagensAntigas } = await supabase
+    // BUSCA MEMÓRIA NO BANCO
+    let { data: historico } = await supabase
       .from("historico_mensagens")
       .select("role, content")
       .eq("phone_number", numCliente)
       .order("created_at", { ascending: true })
-      .limit(10);
+      .limit(8);
 
-    // 3. PERSONALIDADE DO ESPECIALISTA PERFECTLUB
-    const promptEspecialista = `
-      Você é o LubriBot, o especialista técnico da PerfectLub Centro Automotivo.
-      Seu foco principal é TROCA DE ÓLEO E FILTROS.
-      
-      REGRAS DE OURO:
-      - Se o cliente já disse o veículo (ex: Camaro 2011), use essa informação para não perguntar de novo.
-      - Camaro 2011 V8: Usa óleo 5W30 Sintético (capacidade aprox. 7.6 litros). 
-      - Sempre ofereça a troca do filtro de óleo em conjunto com o lubrificante.
-      - Use emojis para ser amigável: 🛢️, 🚗, 🔧, ✅.
-      - Seu objetivo é converter a conversa em um agendamento de serviço.
-    `;
-
-    // 4. PREPARAR MENSAGENS PARA A IA
     const messages = [
-      { role: "system", content: promptEspecialista },
-      ...(mensagensAntigas || []).map(m => ({ role: m.role, content: m.content })),
+      { role: "system", content: "Você é o LubriBot, especialista da PerfectLub. Seu foco é troca de óleo. Se o cliente falar Camaro 2011, você já sabe que usa óleo 5W30 Sintético (7.6 litros). Seja direto e use emojis." },
+      ...(historico || []).map(m => ({ role: m.role, content: m.content })),
       { role: "user", content: mensagemUsuario }
     ];
 
-    // 5. CHAMADA PARA A OPENAI
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: messages,
-      temperature: 0.3
+      messages: messages
     });
 
-    const respostaIA = completion.choices[0].message.content;
+    const resposta = completion.choices[0].message.content;
 
-    // 6. SALVAR A CONVERSA NO BANCO (Para ele lembrar depois)
+    // SALVA NA MEMÓRIA
     await supabase.from("historico_mensagens").insert([
       { phone_number: numCliente, role: "user", content: mensagemUsuario },
-      { phone_number: numCliente, role: "assistant", content: respostaIA }
+      { phone_number: numCliente, role: "assistant", content: resposta }
     ]);
 
-    // 7. RESPONDER AO WHATSAPP
-    twiml.message(respostaIA);
-
-  } catch (error) {
-    console.error("Erro no sistema:", error);
-    twiml.message("Olá! Tive um breve problema técnico aqui na PerfectLub. Poderia repetir sua dúvida?");
+    twiml.message(resposta);
+  } catch (e) {
+    twiml.message("Oi! Aqui é da PerfectLub. Como posso ajudar com seu carro?");
   }
 
   res.writeHead(200, { "Content-Type": "text/xml" });
   res.end(twiml.toString());
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("🚀 LubriBot PerfectLub Online e com Memória!"));
+app.listen(process.env.PORT || 3000, () => console.log("PerfectLub Ativa!"));
