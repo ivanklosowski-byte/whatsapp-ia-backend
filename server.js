@@ -15,7 +15,7 @@ const openai = new OpenAI({
 })
 
 app.get("/", (req, res) => {
-  res.send("Servidor WhatsApp IA funcionando")
+  res.send("Servidor funcionando")
 })
 
 app.post("/webhook", async (req, res) => {
@@ -29,7 +29,7 @@ app.post("/webhook", async (req, res) => {
       messages: [
         {
           role: "system",
-          content: "Você é um assistente educado que responde clientes no WhatsApp."
+          content: "Você responde clientes no WhatsApp de forma educada."
         },
         {
           role: "user",
