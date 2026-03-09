@@ -1,42 +1,47 @@
 require('dotenv').config();
+
 const express = require("express");
 const bodyParser = require("body-parser");
-const { Configuration, OpenAIApi } = require("openai");
 const twilio = require("twilio");
+const OpenAI = require("openai");
 
 const app = express();
+app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-const openai = new OpenAIApi(new Configuration({
-    apiKey: process.env.OPENAI_API_KEY
-}));
-
-const twilioClient = twilio(process.env.TWILIO_SID, process.env.TWILIO_TOKEN);
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
 app.post("/webhook", async (req, res) => {
+  try {
+
     const incomingMsg = req.body.Body;
-    const fromNumber = req.body.From;
 
-    try {
-        const response = await openai.createChatCompletion({
-            model: "gpt-3.5-turbo",
-            messages: [{role: "user", content: incomingMsg}],
-        });
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "Você é um assistente útil para responder clientes no WhatsApp." },
+        { role: "user", content: incomingMsg }
+      ]
+    });
 
-        const aiText = response.data.choices[0].message.content;
+    const reply = response.choices[0].message.content;
 
-        await twilioClient.messages.create({
-            from: process.env.TWILIO_NUMBER,
-            to: fromNumber,
-            body: aiText
-        });
+    const twiml = new twilio.twiml.MessagingResponse();
+    twiml.message(reply);
 
-        res.sendStatus(200);
-    } catch (err) {
-        console.error(err);
-        res.sendStatus(500);
-    }
+    res.writeHead(200, {'Content-Type': 'text/xml'});
+    res.end(twiml.toString());
+
+  } catch (error) {
+    console.error(error);
+    res.send("Erro no servidor");
+  }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
+
+app.listen(PORT, () => {
+  console.log("Servidor rodando na porta " + PORT);
+});
