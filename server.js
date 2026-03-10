@@ -114,7 +114,7 @@ Retorne SOMENTE JSON.
                 }
             ],
             response_format: { type: "json_object" },
-            timeout: 15000
+        
         });
 
         return JSON.parse(response.choices[0].message.content);
