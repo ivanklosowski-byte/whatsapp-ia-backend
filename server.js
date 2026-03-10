@@ -69,9 +69,3 @@ app.post('/whatsapp', async (req, res) => {
     }
     res.type('text/xml').send(twiml.toString());
 });
-
-// 5. VÍNCULO COM A PORTA (CORREÇÃO DO ERRO DO RENDER)
-const PORT = process.env.PORT || 10000; // Render usa portas altas
-app.listen(PORT, () => {
-    console.log(`Servidor ouvindo na porta ${PORT}`);
-});
