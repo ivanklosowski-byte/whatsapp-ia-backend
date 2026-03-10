@@ -1,54 +1,67 @@
 const { createClient } = require('@supabase/supabase-js');
 
-// Configuração do Supabase (Substitui pelos teus dados se ainda não tiveres)
-const supabaseUrl = 'SUA_URL_DO_SUPABASE';
-const supabaseKey = 'SUA_CHAVE_DO_SUPABASE';
+// 1. Configuração de Conexão (Use as chaves que aparecem no seu painel do Supabase)
+const supabaseUrl = 'SUA_URL_AQUI';
+const supabaseKey = 'SUA_CHAVE_AQUI';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 /**
- * Função principal para consultar o banco de memória (Supabase)
- * @param {string} termo - O que o cliente digitou no WhatsApp
+ * Função de busca no banco de 1.314 itens
+ * @param {string} textoCliente - O que o cliente escreveu no WhatsApp
  */
-async function consultarPreco(termo) {
+async function consultarPreco(textoCliente) {
     try {
-        // Remove espaços extras e prepara a busca
-        const busca = termo.trim();
+        // Limpa o texto para focar no nome do produto
+        const termoBusca = textoCliente.toLowerCase()
+            .replace(/preço|valor|quanto|custa|vocês|têm/gi, '')
+            .trim();
 
-        // Faz a consulta na tabela 'produtos' que criámos
+        if (termoBusca.length < 3) return null;
+
+        // Consulta na tabela 'produtos' que você acabou de preencher
         const { data, error } = await supabase
             .from('produtos')
             .select('produto, preco')
-            .ilike('produto', `%${busca}%`) // Busca parcial e inteligente
-            .limit(5); // Retorna até 5 opções para o cliente
+            .ilike('produto', `%${termoBusca}%`) // Busca peças que contenham o nome digitado
+            .limit(4); // Traz as 4 melhores opções
 
         if (error) throw error;
 
         if (data && data.length > 0) {
-            // Formata a lista de produtos encontrados
-            const listaFormatada = data.map(item => {
-                return `⚙️ *${item.produto.trim()}*\n💰 Preço: R$ ${item.preco.trim()}`;
+            const resposta = data.map(item => {
+                // Se o preço na planilha for 0, pede para consultar o balcão
+                const precoFormatado = (item.preco === "0" || !item.preco) 
+                    ? "Consultar consultor" 
+                    : `R$ ${item.preco}`;
+                
+                return `⚙️ *${item.produto.trim()}*\n💰 Preço: ${precoFormatado}`;
             }).join('\n\n');
 
-            return `Encontrei estes itens no meu estoque:\n\n${listaFormatada}`;
-        } else {
-            return "Não encontrei esse produto no catálogo. Queres que eu verifique com um consultor humano?";
+            return `Encontrei estes itens na PerfectLub:\n\n${resposta}`;
         }
 
+        return "Não encontrei esse item específico. Pode me dar mais detalhes ou o nome da marca?";
+
     } catch (err) {
-        console.error("Erro na consulta ao Supabase:", err.message);
-        return "Desculpa, tive um problema ao consultar a tabela de preços. Tenta novamente em instantes.";
+        console.error("Erro ao acessar o banco de dados:", err);
+        return "Tive um probleminha técnico ao consultar o estoque. Tente novamente.";
     }
 }
 
-// Exemplo de como usar esta função dentro do teu bot (WhatsApp-IA):
+// 2. Exemplo de como usar no seu bot de WhatsApp
 /*
- client.on('message', async (msg) => {
-    if (msg.body.toLowerCase().startsWith('preço') || msg.body.toLowerCase().startsWith('valor')) {
-        const produtoParaBuscar = msg.body.replace(/preço|valor/gi, '').trim();
-        const resposta = await consultarPreco(produtoParaBuscar);
-        msg.reply(resposta);
+client.on('message', async (msg) => {
+    // Gatilhos comuns para consulta de preço
+    const gatilhos = ['preço', 'valor', 'quanto', 'tem'];
+    const mensagem = msg.body.toLowerCase();
+
+    if (gatilhos.some(g => mensagem.includes(g))) {
+        const respostaEstoque = await consultarPreco(msg.body);
+        if (respostaEstoque) {
+            await msg.reply(respostaEstoque);
+        }
     }
- });
+});
 */
 
 module.exports = { consultarPreco };
