@@ -11,23 +11,17 @@ app.use(express.json());
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// 1. IA PESQUISADORA (Refinada para o Estoque)
+// 1. IA PESQUISADORA (Com trava de saudação)
 async function pesquisarDadosDetalhados(veiculo) {
+    const v = veiculo.toLowerCase().trim();
+    // Se for saudação curta, nem chama a IA para economizar e não errar
+    if (v.length < 4 || ["boa", "bom", "oi", "ola", "olá"].includes(v)) return { saudacao: true };
+
     try {
-        const prompt = `Você é o Lubi, especialista da PerfectLub. 
-        O cliente informou: ${veiculo}.
-        Retorne um JSON com a ficha técnica exata:
-        {
-          "modelo_exato": "ex: Honda Civic G10 2.0 i-VTEC",
-          "ano": "2017/2018",
-          "motor": "2.0 16V Flex",
-          "potencia": "155 cv",
-          "litros": 4.2,
-          "viscosidade": "0W20",
-          "filtro_oleo": "PSL55",
-          "filtro_ar": "FAP2827"
-        }
-        Se for uma placa ou o usuário perguntar se verifica placa, responda {"placa_solicitada": true}.`;
+        const prompt = `Você é o Lubi da PerfectLub. O cliente diz: ${veiculo}.
+        Se for um carro, retorne JSON:
+        { "modelo": "ex: Civic", "litros": 4.2, "viscosidade": "0W20", "filtro": "PSL55" }
+        Se for saudação ou placa, retorne { "tipo": "interacao" }.`;
 
         const response = await openai.chat.completions.create({
             model: "gpt-4o-mini",
@@ -39,66 +33,60 @@ async function pesquisarDadosDetalhados(veiculo) {
     } catch (e) { return null; }
 }
 
-// 2. LÓGICA DE RESPOSTA DO LUBI
+// 2. LÓGICA DE RESPOSTA
 async function gerarResposta(msg) {
     const texto = msg.toLowerCase().trim();
     const nomeBot = "*Lubi*"; 
 
-    // A. SAUDAÇÕES
-    const saudacoes = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "opa"];
-    if (saudacoes.includes(texto)) {
-        return `Olá! Eu sou o ${nomeBot}, seu consultor técnico na *PerfectLub* 🚗💨\n\nQual o modelo e ano do seu carro? (Ou me mande a *PLACA* que eu verifico os dados técnicos!)`;
+    // A. FILTRO DE SAUDAÇÕES (Reforçado)
+    const saudacoes = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "opa", "boa", "tudo bem"];
+    if (saudacoes.includes(texto) || texto.length < 4) {
+        return `Olá! Eu sou o ${nomeBot}, seu consultor na *PerfectLub* 🚗💨\n\nQual o modelo e ano do seu carro? (Ou mande a placa!)`;
     }
 
     const ficha = await pesquisarDadosDetalhados(msg);
+    if (ficha?.tipo === "interacao") return `Legal! Me mande os detalhes do veículo ou a placa para eu consultar aqui!`;
 
-    // B. TRATAMENTO DE PLACA (Finge que está buscando para o humano assumir)
-    if (ficha?.placa_solicitada || texto.length === 7) {
-        return `Legal! Estou consultando a placa no meu sistema técnico... 🔍\n\nEnquanto isso, você teria a quilometragem atual do veículo? Um consultor já vai confirmar o preço exato para você!`;
-    }
-
-    if (!ficha || !ficha.litros) return `Não identifiquei o modelo. Pode me dizer o ano e o motor?`;
+    if (!ficha || !ficha.litros) return `Não entendi o modelo. Pode confirmar o ano e motor?`;
 
     try {
-        // BUSCA INTELIGENTE: Remove espaços e tenta achar a viscosidade no nome do produto
+        // BUSCA DE ÓLEO MELHORADA (Tenta várias formas da viscosidade)
+        const viscLimpa = ficha.viscosidade.replace(/[^a-zA-Z0-10]/g, ""); // "0W20"
+        
         const { data: oleos } = await supabase.from('produtos')
             .select('produto, preco')
-            .ilike('produto', `%${ficha.viscosidade.replace(/\s/g, "")}%`) // Busca "0W20" ou "0W-20"
+            .or(`produto.ilike.%${viscLimpa}%, produto.ilike.%${ficha.viscosidade}%`) // Tenta 0W20 ou 0W-20
             .ilike('produto', '%1L%')
             .order('preco', { ascending: true })
             .limit(1);
         
-        const { data: fOleo } = await supabase.from('produtos').select('produto, preco').ilike('produto', `%${ficha.filtro_oleo}%`).limit(1);
+        const { data: fOleo } = await supabase.from('produtos').select('produto, preco').ilike('produto', `%${ficha.filtro}%`).limit(1);
         const { data: mo } = await supabase.from('produtos').select('preco').ilike('produto', '%mão de obra%').limit(1);
 
         if (oleos?.length > 0) {
             const vLitro = parseFloat(oleos[0].preco.toString().replace(",", "."));
             const vMO = mo?.length > 0 ? parseFloat(mo[0].preco.toString().replace(",", ".")) : 70;
-            const vFO = fOleo?.length > 0 ? parseFloat(fOleo[0].preco.toString().replace(",", ".")) : 35;
+            const vFO = fOleo?.length > 0 ? parseFloat(fOleo[0].preco.toString().replace(",", ".")) : 40;
 
-            const totalBase = (vLitro * ficha.litros) + vFO + vMO;
+            const total = (vLitro * ficha.litros) + vFO + vMO;
 
-            return `✅ *ORÇAMENTO TÉCNICO PERFECTLUB*\n\n` +
-                   `🚘 *Veículo:* ${ficha.modelo_exato}\n` +
-                   `📅 *Ano:* ${ficha.ano} | *Motor:* ${ficha.motor}\n` +
-                   `📏 *Capacidade:* ${ficha.litros} Litros\n\n` +
-                   `--- *VALORES ESTIMADOS* ---\n` +
-                   `🛢️ *Óleo (${ficha.viscosidade}):* R$ ${(vLitro * ficha.litros).toFixed(2)} (${oleos[0].produto})\n` +
-                   `⚙️ *Filtro de Óleo:* R$ ${vFO.toFixed(2)}\n` +
+            return `✅ *ORÇAMENTO DO ${nomeBot.toUpperCase()}*\n\n` +
+                   `🚘 *Veículo:* ${ficha.modelo}\n` +
+                   `📏 *Capacidade:* ${ficha.litros}L de ${ficha.viscosidade}\n\n` +
+                   `🛢️ *Óleo:* R$ ${(vLitro * ficha.litros).toFixed(2)} (${oleos[0].produto})\n` +
+                   `⚙️ *Filtro:* R$ ${vFO.toFixed(2)}\n` +
                    `🔧 *Mão de Obra:* R$ ${vMO.toFixed(2)}\n\n` +
-                   `💰 *TOTAL: R$ ${totalBase.toFixed(2)}*\n\n` +
-                   `*Podemos agendar sua troca para hoje?*`;
+                   `💰 *TOTAL: R$ ${total.toFixed(2)}*`;
         }
         
-        // Se não achou no estoque, o Lubi tenta ser útil e não apenas dar erro
-        return `O ${nomeBot} identificou que seu ${ficha.modelo_exato} usa ${ficha.litros}L de ${ficha.viscosidade}.\n\n⚠️ Estou com uma instabilidade para ver o preço desse óleo agora, mas temos em estoque! Um consultor vai te passar o valor em 1 minuto.`;
+        return `O ${nomeBot} viu que seu carro usa ${ficha.litros}L de ${ficha.viscosidade}, mas não achei esse óleo no sistema. Um consultor vai te passar o valor agora!`;
     } catch (err) {
-        return "Tive um erro no sistema. Um consultor físico vai te atender agora!";
+        return "Erro no sistema. Aguarde um momento!";
     }
 }
 
 // ROTAS
-app.get('/', (req, res) => res.send('Lubi v6 Online!'));
+app.get('/', (req, res) => res.send('Lubi v7 Online!'));
 app.post('/whatsapp', async (req, res) => {
     const twiml = new MessagingResponse();
     twiml.message(await gerarResposta(req.body.Body || ""));
@@ -106,4 +94,4 @@ app.post('/whatsapp', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 Lubi v6 rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Lubi v7 na porta ${PORT}`));
