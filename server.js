@@ -8,24 +8,26 @@ const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-// 1. CONEXÕES
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// 2. IA PESQUISADORA (Lubi consultando manuais e fóruns)
-async function pesquisarRevisaoCompleta(carroCliente) {
+// 1. IA PESQUISADORA (Agora busca Ficha Técnica Detalhada)
+async function pesquisarDadosDetalhados(veiculo) {
     try {
-        const prompt = `Você é o Lubi, consultor técnico especialista da PerfectLub. 
-        O cliente quer trocar o óleo de: ${carroCliente}.
-        Pesquise em manuais técnicos e retorne APENAS um JSON:
+        const prompt = `Você é o Lubi, especialista da PerfectLub. 
+        O cliente informou: ${veiculo}.
+        Retorne um JSON com a ficha técnica exata para troca de óleo:
         {
-          "litros": quantidade_decimal,
-          "viscosidade": "ex_0W20",
-          "filtro_oleo": "referencia_tecfil_wega",
-          "filtro_ar": "referencia_filtro_ar",
-          "filtro_cabine": "referencia_filtro_cabine"
+          "modelo_exato": "ex: Honda Civic G10 2.0 i-VTEC",
+          "ano": "2017/2018",
+          "motor": "2.0 16V Flex",
+          "potencia": "155 cv",
+          "litros": 4.2,
+          "viscosidade": "0W20",
+          "filtro_oleo": "PSL55",
+          "filtro_ar": "FAP2827"
         }
-        Se a mensagem não for um carro ou for apenas saudação, retorne {"erro": "ignore"}.`;
+        Seja extremamente preciso com a motorização.`;
 
         const response = await openai.chat.completions.create({
             model: "gpt-4o-mini",
@@ -33,55 +35,67 @@ async function pesquisarRevisaoCompleta(carroCliente) {
             response_format: { type: "json_object" }
         });
 
-        const ficha = JSON.parse(response.choices[0].message.content);
-        return ficha.litros ? ficha : null;
+        return JSON.parse(response.choices[0].message.content);
     } catch (e) { return null; }
 }
 
-// 3. LÓGICA DE RESPOSTA DO LUBI
+// 2. LÓGICA DE RESPOSTA DO LUBI
 async function gerarResposta(msg) {
     const texto = msg.toLowerCase().trim();
     const nomeBot = "*Lubi*"; 
 
     // A. SAUDAÇÕES
-    const saudacoes = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "opa", "tudo bem"];
+    const saudacoes = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "opa"];
     if (saudacoes.includes(texto)) {
-        return `Olá! Eu sou o ${nomeBot}, seu assistente técnico aqui na *PerfectLub* 🚗💨\n\nComo posso te ajudar hoje? Se quiser um orçamento, me mande o *modelo e ano do seu carro*!`;
+        return `Olá! Eu sou o ${nomeBot}, seu consultor técnico na *PerfectLub* 🚗💨\n\nPara um orçamento preciso, me mande o *modelo e ano* do seu carro!`;
     }
 
-    // B. BUSCA DIRETA (Ex: "Qual valor do óleo Lubrax?")
-    if (texto.includes("valor") || texto.includes("preço") || texto.includes("tem") || texto.includes("quanto custa")) {
-        const termoBusca = texto.replace(/qual|o|valor|do|dos|preço|quanto|custa|tem|temos/g, "").trim();
-        if (termoBusca.length > 2) {
-            const { data: produtos } = await supabase.from('produtos').select('produto, preco').ilike('produto', `%${termoBusca}%`).limit(5);
-            if (produtos?.length > 0) {
-                let lista = `🔎 *Lubi encontrou no estoque para: ${termoBusca.toUpperCase()}*\n\n`;
-                produtos.forEach(p => {
-                    const preco = parseFloat(p.preco.toString().replace(",", ".")).toFixed(2);
-                    lista += `▪️ ${p.produto}: *R$ ${preco}*\n`;
-                });
-                return lista;
-            }
-        }
-    }
-
-    // C. IDENTIFICAÇÃO E ORÇAMENTO TÉCNICO
-    const ficha = await pesquisarRevisaoCompleta(msg);
-    if (!ficha) return `Ainda não identifiquei o modelo. Pode confirmar o veículo e o ano? Ex: Honda HRV 2017.`;
+    // B. IDENTIFICAÇÃO E ORÇAMENTO DETALHADO
+    const ficha = await pesquisarDadosDetalhados(msg);
+    if (!ficha || !ficha.litros) return `Não identifiquei os detalhes desse modelo. Pode confirmar o ano e motor?`;
 
     try {
-        // Busca Óleo (Custo-benefício 1L)
+        // Busca Óleo no Estoque
         const { data: oleos } = await supabase.from('produtos').select('produto, preco').ilike('produto', `%${ficha.viscosidade}%`).ilike('produto', '%1L%').order('preco', { ascending: true }).limit(1);
         
         // Busca Filtro de Óleo
         const { data: fOleo } = await supabase.from('produtos').select('produto, preco').ilike('produto', `%${ficha.filtro_oleo}%`).limit(1);
 
-        // Busca Filtro de Ar (Oportunidade de Venda)
-        const { data: fAr } = await supabase.from('produtos').select('produto, preco').ilike('produto', `%${ficha.filtro_ar}%`).limit(1);
-
-        // Mão de Obra
+        // Busca Mão de Obra
         const { data: mo } = await supabase.from('produtos').select('preco').ilike('produto', '%mão de obra%').limit(1);
 
         if (oleos?.length > 0) {
             const vLitro = parseFloat(oleos[0].preco.toString().replace(",", "."));
-            const vMO = mo?.length > 0 ? parseFloat(mo[0].preco
+            const vMO = mo?.length > 0 ? parseFloat(mo[0].preco.toString().replace(",", ".")) : 70;
+            const vFO = fOleo?.length > 0 ? parseFloat(fOleo[0].preco.toString().replace(",", ".")) : 35;
+
+            const totalBase = (vLitro * ficha.litros) + vFO + vMO;
+
+            return `✅ *ORÇAMENTO TÉCNICO PERFECTLUB*\n\n` +
+                   `🚘 *Veículo:* ${ficha.modelo_exato}\n` +
+                   `📅 *Ano:* ${ficha.ano}\n` +
+                   `⚙️ *Motor:* ${ficha.motor} (${ficha.potencia})\n` +
+                   `📏 *Capacidade:* ${ficha.litros} Litros\n\n` +
+                   `--- *VALORES ESTIMADOS* ---\n` +
+                   `🛢️ *Óleo (${ficha.viscosidade}):* R$ ${(vLitro * ficha.litros).toFixed(2)}\n` +
+                   `⚙️ *Filtro de Óleo:* R$ ${vFO.toFixed(2)}\n` +
+                   `🔧 *Mão de Obra:* R$ ${vMO.toFixed(2)}\n\n` +
+                   `💰 *TOTAL: R$ ${totalBase.toFixed(2)}*\n\n` +
+                   `⚠️ *Para validar o chassi e garantir estas peças, por favor, me informe a PLACA do veículo.*`;
+        }
+        return `Achei os dados para o ${ficha.modelo_exato}, mas não temos o óleo ${ficha.viscosidade} em estoque hoje.`;
+    } catch (err) {
+        return "Erro ao consultar o sistema. Um consultor físico vai te atender agora!";
+    }
+}
+
+// 4. ROTAS
+app.get('/', (req, res) => res.send('Lubi Especialista Online!'));
+app.post('/whatsapp', async (req, res) => {
+    const twiml = new MessagingResponse();
+    twiml.message(await gerarResposta(req.body.Body || ""));
+    res.type('text/xml').send(twiml.toString());
+});
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🚀 O Lubi está rodando na porta ${PORT}`));
