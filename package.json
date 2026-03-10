@@ -6,8 +6,6 @@
   "scripts": {
     "start": "node server.js"
   },
-  "author": "",
-  "license": "MIT",
   "dependencies": {
     "@supabase/supabase-js": "^2.39.7",
     "body-parser": "^1.20.2",
