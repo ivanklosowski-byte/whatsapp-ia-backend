@@ -1,94 +1,102 @@
+require('dotenv').config();
+const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
+const { MessagingResponse } = require('twilio').twiml;
 
-// 1. CONEXÃO COM O SUPABASE
-const supabaseUrl = process.env.SUPABASE_URL || 'SUA_URL_AQUI';
-const supabaseKey = process.env.SUPABASE_KEY || 'SUA_CHAVE_AQUI';
-const supabase = createClient(supabaseUrl, supabaseKey);
+const app = express();
+app.use(express.urlencoded({ extended: false }));
+app.use(express.json());
 
-// 2. TABELA TÉCNICA (O Cérebro do Bot)
-// Podes adicionar mais carros aqui seguindo o mesmo padrão
+// 1. CONEXÃO COM O SUPABASE (Usa Variáveis de Ambiente do Render)
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+
+// 2. TABELA TÉCNICA (Evita alucinações e erros de litragem)
 const catalogoTecnico = {
-    "onix": { litros: 3.5, viscosidade: "5W30", filtroOleo: "PEL676", filtroAr: "ARL8830", combustivel: "GI04/7" },
-    "astra": { litros: 4.5, viscosidade: "5W30", filtroOleo: "PSL612", filtroAr: "ARL8825", combustivel: "GI04/7" },
-    "hb20": { litros: 3.6, viscosidade: "5W30", filtroOleo: "PSL152", filtroAr: "ARL2340", combustivel: "GI50/7" },
-    "corolla": { litros: 4.2, viscosidade: "5W30", filtroOleo: "PSL129", filtroAr: "ARL2203", combustivel: "GI04/7" },
-    "gol": { litros: 3.5, viscosidade: "5W40", filtroOleo: "PSL560", filtroAr: "ARL6079", combustivel: "GI04/7" }
+    "onix": { litros: 3.5, viscosidade: "5W30", filtroOleo: "PEL676", motor: "1.0/1.4" },
+    "astra": { litros: 4.5, viscosidade: "5W30", filtroOleo: "PSL612", motor: "2.0" },
+    "hb20": { litros: 3.6, viscosidade: "5W30", filtroOleo: "PSL152", motor: "1.0/1.6" },
+    "corolla": { litros: 4.2, viscosidade: "5W30", filtroOleo: "PSL129", motor: "1.8/2.0" }
 };
 
-/**
- * 3. FUNÇÃO PRINCIPAL DE ORÇAMENTO
- */
-async function consultarOrcamento(mensagem) {
+// 3. FUNÇÃO DE CÁLCULO DE ORÇAMENTO REAL
+async function gerarOrcamento(textoCliente) {
     try {
-        const texto = mensagem.toLowerCase();
-        
-        // Identifica o carro na mensagem
+        const msg = textoCliente.toLowerCase();
         let carro = null;
+
+        // Identifica o carro na mensagem
         for (let modelo in catalogoTecnico) {
-            if (texto.includes(modelo)) {
+            if (msg.includes(modelo)) {
                 carro = { nome: modelo, ...catalogoTecnico[modelo] };
                 break;
             }
         }
 
-        if (!carro) {
-            return "Poderia informar o modelo e motor do carro? (Ex: Onix 1.0, Astra 2.0)";
-        }
+        if (!carro) return null;
 
-        // Define a marca de óleo preferida (Padrão: Lubrax)
-        let marcaOleo = "lubrax";
-        if (texto.includes("shell")) marcaOleo = "shell";
-        if (texto.includes("petronas")) marcaOleo = "petronas";
-
-        // BUSCA NO SUPABASE (Preço do Litro)
-        const { data: prodOleo } = await supabase
+        // Busca Preço do Óleo (Ex: Lubrax 5W30)
+        const { data: oleo } = await supabase
             .from('produtos')
-            .select('produto, preco')
-            .ilike('produto', `%${marcaOleo}%${carro.viscosidade}%`)
+            .select('preco')
+            .ilike('produto', `%lubrax%${carro.viscosidade}%`)
             .limit(1);
 
-        // BUSCA NO SUPABASE (Preço do Filtro de Óleo)
-        const { data: prodFiltro } = await supabase
+        // Busca Preço do Filtro de Óleo específico
+        const { data: filtro } = await supabase
             .from('produtos')
             .select('produto, preco')
             .ilike('produto', `%${carro.filtroOleo}%`)
             .limit(1);
 
-        // BUSCA NO SUPABASE (Mão de Obra)
+        // Busca Mão de Obra
         const { data: mo } = await supabase
             .from('produtos')
             .select('preco')
             .ilike('produto', '%mão de obra (troca de óleo)%')
             .single();
 
-        if (prodOleo && prodOleo.length > 0 && prodFiltro && prodFiltro.length > 0) {
-            const valorLitro = parseFloat(prodOleo[0].preco);
-            const valorFiltro = parseFloat(prodFiltro[0].preco);
-            const valorMO = parseFloat(mo.preco || 60);
+        if (oleo?.length > 0 && filtro?.length > 0) {
+            const vLitro = parseFloat(oleo[0].preco);
+            const vFiltro = parseFloat(filtro[0].preco);
+            const vMO = parseFloat(mo?.preco || 60);
 
-            const totalOleo = valorLitro * carro.litros;
-            const totalGeral = totalOleo + valorFiltro + valorMO;
+            const totalOleo = vLitro * carro.litros;
+            const totalGeral = totalOleo + vFiltro + vMO;
 
-            let resposta = `✅ *Orçamento PerfectLub: ${carro.nome.toUpperCase()}*\n\n`;
-            resposta += `🛢️ Óleo ${marcaOleo.toUpperCase()} (${carro.litros}L): R$ ${totalOleo.toFixed(2)}\n`;
-            resposta += `⚙️ Filtro de Óleo (${carro.filtroOleo}): R$ ${valorFiltro.toFixed(2)}\n`;
-            resposta += `🔧 Mão de Obra: R$ ${valorMO.toFixed(2)}\n\n`;
-            resposta += `💰 *TOTAL: R$ ${totalGeral.toFixed(2)}*`;
-
-            // Verifica se o cliente quer outros filtros
-            if (texto.includes("completo") || texto.includes("ar")) {
-                resposta += `\n\n_Deseja que eu calcule também os filtros de Ar e Combustível?_`;
-            }
-
-            return resposta;
+            return `✅ *Orçamento PerfectLub: ${carro.nome.toUpperCase()}*\n\n` +
+                   `🛢️ Óleo Lubrax (${carro.litros}L): R$ ${totalOleo.toFixed(2)}\n` +
+                   `⚙️ Filtro de Óleo: R$ ${vFiltro.toFixed(2)}\n` +
+                   `🔧 Mão de Obra: R$ ${vMO.toFixed(2)}\n\n` +
+                   `💰 *TOTAL: R$ ${totalGeral.toFixed(2)}*\n\n` +
+                   `Posso agendar o seu serviço?`;
         }
-
-        return `Encontrei o ${carro.nome}, mas não localizei o preço de um dos itens no estoque. Gostaria de falar com um consultor?`;
-
-    } catch (error) {
-        console.error("Erro no processamento:", error);
-        return "Tive um problema ao consultar o sistema. Um momento, por favor.";
+        return null;
+    } catch (e) {
+        console.error("Erro na busca:", e);
+        return null;
     }
 }
 
-module.exports = { consultarOrcamento };
+// 4. ROTA DO WEBHOOK (Onde o Twilio envia a mensagem)
+app.post('/whatsapp', async (req, res) => {
+    const msgCliente = req.body.Body;
+    const twiml = new MessagingResponse();
+
+    // Tenta gerar orçamento pelo estoque primeiro
+    const orcamento = await gerarOrcamento(msgCliente);
+
+    if (orcamento) {
+        twiml.message(orcamento);
+    } else {
+        // Se não for pedido de orçamento, aqui você chamaria a sua IA (OpenAI)
+        twiml.message("Olá! Sou o assistente da PerfectLub. Para orçamentos, informe o modelo do carro.");
+    }
+
+    res.type('text/xml').send(twiml.toString());
+});
+
+// 5. INICIALIZAÇÃO DO SERVIDOR (Essencial para o Render não fechar)
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Servidor rodando com sucesso na porta ${PORT}`);
+});
