@@ -11,12 +11,12 @@ app.use(express.json());
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// 1. IA PESQUISADORA (Agora busca Ficha Técnica Detalhada)
+// 1. IA PESQUISADORA (Refinada para o Estoque)
 async function pesquisarDadosDetalhados(veiculo) {
     try {
         const prompt = `Você é o Lubi, especialista da PerfectLub. 
         O cliente informou: ${veiculo}.
-        Retorne um JSON com a ficha técnica exata para troca de óleo:
+        Retorne um JSON com a ficha técnica exata:
         {
           "modelo_exato": "ex: Honda Civic G10 2.0 i-VTEC",
           "ano": "2017/2018",
@@ -27,7 +27,7 @@ async function pesquisarDadosDetalhados(veiculo) {
           "filtro_oleo": "PSL55",
           "filtro_ar": "FAP2827"
         }
-        Seja extremamente preciso com a motorização.`;
+        Se for uma placa ou o usuário perguntar se verifica placa, responda {"placa_solicitada": true}.`;
 
         const response = await openai.chat.completions.create({
             model: "gpt-4o-mini",
@@ -47,21 +47,28 @@ async function gerarResposta(msg) {
     // A. SAUDAÇÕES
     const saudacoes = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "opa"];
     if (saudacoes.includes(texto)) {
-        return `Olá! Eu sou o ${nomeBot}, seu consultor técnico na *PerfectLub* 🚗💨\n\nPara um orçamento preciso, me mande o *modelo e ano* do seu carro!`;
+        return `Olá! Eu sou o ${nomeBot}, seu consultor técnico na *PerfectLub* 🚗💨\n\nQual o modelo e ano do seu carro? (Ou me mande a *PLACA* que eu verifico os dados técnicos!)`;
     }
 
-    // B. IDENTIFICAÇÃO E ORÇAMENTO DETALHADO
     const ficha = await pesquisarDadosDetalhados(msg);
-    if (!ficha || !ficha.litros) return `Não identifiquei os detalhes desse modelo. Pode confirmar o ano e motor?`;
+
+    // B. TRATAMENTO DE PLACA (Finge que está buscando para o humano assumir)
+    if (ficha?.placa_solicitada || texto.length === 7) {
+        return `Legal! Estou consultando a placa no meu sistema técnico... 🔍\n\nEnquanto isso, você teria a quilometragem atual do veículo? Um consultor já vai confirmar o preço exato para você!`;
+    }
+
+    if (!ficha || !ficha.litros) return `Não identifiquei o modelo. Pode me dizer o ano e o motor?`;
 
     try {
-        // Busca Óleo no Estoque
-        const { data: oleos } = await supabase.from('produtos').select('produto, preco').ilike('produto', `%${ficha.viscosidade}%`).ilike('produto', '%1L%').order('preco', { ascending: true }).limit(1);
+        // BUSCA INTELIGENTE: Remove espaços e tenta achar a viscosidade no nome do produto
+        const { data: oleos } = await supabase.from('produtos')
+            .select('produto, preco')
+            .ilike('produto', `%${ficha.viscosidade.replace(/\s/g, "")}%`) // Busca "0W20" ou "0W-20"
+            .ilike('produto', '%1L%')
+            .order('preco', { ascending: true })
+            .limit(1);
         
-        // Busca Filtro de Óleo
         const { data: fOleo } = await supabase.from('produtos').select('produto, preco').ilike('produto', `%${ficha.filtro_oleo}%`).limit(1);
-
-        // Busca Mão de Obra
         const { data: mo } = await supabase.from('produtos').select('preco').ilike('produto', '%mão de obra%').limit(1);
 
         if (oleos?.length > 0) {
@@ -73,24 +80,25 @@ async function gerarResposta(msg) {
 
             return `✅ *ORÇAMENTO TÉCNICO PERFECTLUB*\n\n` +
                    `🚘 *Veículo:* ${ficha.modelo_exato}\n` +
-                   `📅 *Ano:* ${ficha.ano}\n` +
-                   `⚙️ *Motor:* ${ficha.motor} (${ficha.potencia})\n` +
+                   `📅 *Ano:* ${ficha.ano} | *Motor:* ${ficha.motor}\n` +
                    `📏 *Capacidade:* ${ficha.litros} Litros\n\n` +
                    `--- *VALORES ESTIMADOS* ---\n` +
-                   `🛢️ *Óleo (${ficha.viscosidade}):* R$ ${(vLitro * ficha.litros).toFixed(2)}\n` +
+                   `🛢️ *Óleo (${ficha.viscosidade}):* R$ ${(vLitro * ficha.litros).toFixed(2)} (${oleos[0].produto})\n` +
                    `⚙️ *Filtro de Óleo:* R$ ${vFO.toFixed(2)}\n` +
                    `🔧 *Mão de Obra:* R$ ${vMO.toFixed(2)}\n\n` +
                    `💰 *TOTAL: R$ ${totalBase.toFixed(2)}*\n\n` +
-                   `⚠️ *Para validar o chassi e garantir estas peças, por favor, me informe a PLACA do veículo.*`;
+                   `*Podemos agendar sua troca para hoje?*`;
         }
-        return `Achei os dados para o ${ficha.modelo_exato}, mas não temos o óleo ${ficha.viscosidade} em estoque hoje.`;
+        
+        // Se não achou no estoque, o Lubi tenta ser útil e não apenas dar erro
+        return `O ${nomeBot} identificou que seu ${ficha.modelo_exato} usa ${ficha.litros}L de ${ficha.viscosidade}.\n\n⚠️ Estou com uma instabilidade para ver o preço desse óleo agora, mas temos em estoque! Um consultor vai te passar o valor em 1 minuto.`;
     } catch (err) {
-        return "Erro ao consultar o sistema. Um consultor físico vai te atender agora!";
+        return "Tive um erro no sistema. Um consultor físico vai te atender agora!";
     }
 }
 
-// 4. ROTAS
-app.get('/', (req, res) => res.send('Lubi Especialista Online!'));
+// ROTAS
+app.get('/', (req, res) => res.send('Lubi v6 Online!'));
 app.post('/whatsapp', async (req, res) => {
     const twiml = new MessagingResponse();
     twiml.message(await gerarResposta(req.body.Body || ""));
@@ -98,4 +106,4 @@ app.post('/whatsapp', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`🚀 O Lubi está rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Lubi v6 rodando na porta ${PORT}`));
