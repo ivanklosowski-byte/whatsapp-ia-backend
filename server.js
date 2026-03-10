@@ -8,22 +8,21 @@ const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-// 1. CONEXÕES (Utilizando suas variáveis do Render)
+// 1. CONEXÕES
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // 2. IA PESQUISADORA (Consulta Manuais e Fóruns Técnicos)
 async function pesquisarFichaTecnica(carroCliente) {
     try {
-        const prompt = `Você é um mecânico sênior da PerfectLub especialista em troca de óleo. 
-        O cliente possui um: ${carroCliente}.
-        Pesquise em manuais técnicos e retorne APENAS um JSON no formato abaixo:
+        const prompt = `Você é um mecânico sênior da PerfectLub. O cliente quer trocar o óleo de: ${carroCliente}.
+        Pesquise em manuais técnicos e retorne APENAS um JSON:
         {
           "litros": quantidade_decimal,
           "viscosidade": "ex_5W30",
           "filtro_ref": "referencia_mercado_tecfil_ou_wega"
         }
-        Importante: Para o campo "filtro_ref", use códigos de mercado como PEL676, PSL55, PSL129. Não use códigos originais de montadora.`;
+        Importante: Se a mensagem for apenas uma saudação ou não for um carro, retorne {"erro": "nao_e_carro"}.`;
 
         const response = await openai.chat.completions.create({
             model: "gpt-4o-mini",
@@ -32,102 +31,92 @@ async function pesquisarFichaTecnica(carroCliente) {
         });
 
         const ficha = JSON.parse(response.choices[0].message.content);
-        
-        // Evita que a IA responda com placeholders se não souber o carro
-        if (ficha.litros === "quantidade_decimal" || !ficha.litros) return null;
-        
-        return ficha;
+        return ficha.erro ? null : ficha;
     } catch (e) {
-        console.error("Erro na pesquisa da IA:", e);
         return null;
     }
 }
 
-// 3. LÓGICA DE ORÇAMENTO E CONSULTA DE PREÇOS
+// 3. LÓGICA PRINCIPAL DE RESPOSTA
 async function gerarResposta(msg) {
-    const texto = msg.toLowerCase();
+    const texto = msg.toLowerCase().trim();
 
-    // A. SE FOR UMA PERGUNTA GERAL DE PREÇO
-    if (texto.includes("valor") || texto.includes("preço") || texto.includes("quanto custa")) {
-        const termoBusca = texto.replace(/qual|o|valor|do|dos|preço|quanto|custa/g, "").trim();
-        
+    // A. FILTRO DE SAUDAÇÕES
+    const saudacoes = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "opa"];
+    if (saudacoes.includes(texto)) {
+        return "Olá! Sou o assistente da *PerfectLub* 🚗💨\n\nComo posso ajudar? Se precisar de um orçamento, mande o *modelo e ano do seu carro* (ex: Onix 2023).";
+    }
+
+    // B. BUSCA DIRETA DE PRODUTOS (Ex: "Tem Lubrax?", "Qual valor do 5w30?")
+    if (texto.includes("valor") || texto.includes("preço") || texto.includes("tem") || texto.includes("quanto custa")) {
+        const termoBusca = texto.replace(/qual|o|valor|do|dos|preço|quanto|custa|tem|temos/g, "").trim();
         if (termoBusca.length > 2) {
             const { data: produtos } = await supabase.from('produtos').select('produto, preco').ilike('produto', `%${termoBusca}%`).limit(5);
-
             if (produtos?.length > 0) {
-                let lista = `🔎 *Itens encontrados para: ${termoBusca.toUpperCase()}*\n\n`;
+                let lista = `🔎 *Itens em estoque para: ${termoBusca.toUpperCase()}*\n\n`;
                 produtos.forEach(p => {
-                    const precoFormatado = parseFloat(p.preco.toString().replace(",", ".")).toFixed(2);
-                    lista += `▪️ ${p.produto}: R$ ${precoFormatado}\n`;
+                    const preco = parseFloat(p.preco.toString().replace(",", ".")).toFixed(2);
+                    lista += `▪️ ${p.produto}: *R$ ${preco}*\n`;
                 });
                 return lista;
             }
         }
-        // Se a pergunta de preço for sobre um carro, a lógica continua para o passo B
     }
 
-    // B. SE FOR IDENTIFICAÇÃO DE VEÍCULO
+    // C. IDENTIFICAÇÃO TÉCNICA DO VEÍCULO
     const ficha = await pesquisarFichaTecnica(msg);
-    if (!ficha) return "Olá! Sou o assistente da PerfectLub. Para orçamentos, informe o modelo e ano do carro. Para preços avulsos, pergunte ex: 'Qual valor do óleo 5w30?'";
+    if (!ficha) return "Não identifiquei o modelo. Poderia informar o veículo e o ano? Ex: 'Troca de óleo Honda HRV 2017'.";
 
     try {
-        // Busca Óleo no Supabase (pela viscosidade)
-        const { data: oleos } = await supabase.from('produtos').select('produto, preco').ilike('produto', `%${ficha.viscosidade}%`).limit(1);
+        // Busca Óleo (Prioriza o mais barato/custo-benefício da viscosidade)
+        const { data: oleos } = await supabase.from('produtos').select('produto, preco').ilike('produto', `%${ficha.viscosidade}%`).order('preco', { ascending: true }).limit(1);
         
-        // Busca Filtro no Supabase (pela referência sugerida pela IA)
+        // Busca Filtro (Pela referência técnica)
         const { data: filtros } = await supabase.from('produtos').select('produto, preco').ilike('produto', `%${ficha.filtro_ref}%`).limit(1);
 
-        // Busca Mão de Obra
+        // Mão de Obra
         const { data: mo } = await supabase.from('produtos').select('preco').ilike('produto', '%mão de obra%').limit(1);
 
         if (oleos?.length > 0) {
             const vLitro = parseFloat(oleos[0].preco.toString().replace(",", "."));
-            const vMO = mo?.length > 0 ? parseFloat(mo[0].preco.toString().replace(",", ".")) : 60;
+            const vMO = mo?.length > 0 ? parseFloat(mo[0].preco.toString().replace(",", ".")) : 70;
             const vFiltro = filtros?.length > 0 ? parseFloat(filtros[0].preco.toString().replace(",", ".")) : 0;
 
             const totalOleo = vLitro * ficha.litros;
             const totalGeral = totalOleo + vFiltro + vMO;
 
-            let resposta = `✅ *Orçamento Técnico: ${msg.toUpperCase()}*\n\n` +
-                           `📊 Dados do Manual: ${ficha.litros}L de óleo ${ficha.viscosidade}\n\n` +
-                           `🛢️ Óleo (${oleos[0].produto}): R$ ${totalOleo.toFixed(2)}\n`;
+            let resposta = `✅ *Orçamento PerfectLub: ${msg.toUpperCase()}*\n\n` +
+                           `📊 *Manual:* ${ficha.litros}L de óleo ${ficha.viscosidade}\n\n` +
+                           `🛢️ *Óleo:* R$ ${totalOleo.toFixed(2)} (${oleos[0].produto})\n`;
 
             if (vFiltro > 0) {
-                resposta += `⚙️ Filtro (${filtros[0].produto}): R$ ${vFiltro.toFixed(2)}\n`;
+                resposta += `⚙️ *Filtro:* R$ ${vFiltro.toFixed(2)} (${filtros[0].produto})\n`;
             } else {
-                resposta += `⚙️ Filtro (${ficha.filtro_ref}): Sob consulta (não localizado no estoque imediato)\n`;
+                resposta += `⚙️ *Filtro (${ficha.filtro_ref}):* Sob consulta no balcão.\n`;
             }
 
-            resposta += `🔧 Mão de Obra: R$ ${vMO.toFixed(2)}\n\n` +
+            resposta += `🔧 *Mão de Obra:* R$ ${vMO.toFixed(2)}\n\n` +
                         `💰 *TOTAL ESTIMADO: R$ ${totalGeral.toFixed(2)}*\n\n` +
-                        `Podemos agendar sua visita?`;
-            
+                        `Deseja agendar o serviço para hoje?`;
             return resposta;
         }
-
-        return `Identifiquei que o ${msg} utiliza ${ficha.litros}L de ${ficha.viscosidade}, mas não localizei o preço deste óleo no sistema agora. Deseja falar com um atendente?`;
-
+        return `Achei os dados (${ficha.litros}L de ${ficha.viscosidade}), mas não localizei esse óleo no estoque agora.`;
     } catch (err) {
-        console.error("Erro no processamento:", err);
-        return "Tive um problema ao consultar os preços. Um consultor físico já foi avisado e vai te chamar!";
+        return "Erro ao acessar o banco de dados. Um consultor físico vai te chamar!";
     }
 }
 
-// 4. ROTAS DO SERVIDOR
-app.get('/', (req, res) => res.send('Especialista PerfectLub Online!'));
+// 4. ROTAS
+app.get('/', (req, res) => res.send('Servidor PerfectLub IA Ativo!'));
 
 app.post('/whatsapp', async (req, res) => {
     const msgCliente = req.body.Body || "";
     const twiml = new MessagingResponse();
-
     const respostaFinal = await gerarResposta(msgCliente);
     twiml.message(respostaFinal);
-
     res.type('text/xml').send(twiml.toString());
 });
 
-// 5. INICIALIZAÇÃO
+// 5. PORTA
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-    console.log(`🚀 Servidor Especialista rodando na porta ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Servidor Especialista rodando na porta ${PORT}`));
