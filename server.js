@@ -7,18 +7,20 @@ const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-// 1. CONEXÃO COM O SUPABASE (Usa Variáveis de Ambiente do Render)
+// 1. CONEXÃO COM O SUPABASE
+// Certifique-se de que SUPABASE_URL e SUPABASE_KEY estão no Environment do Render
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-// 2. TABELA TÉCNICA (Evita alucinações e erros de litragem)
+// 2. TABELA TÉCNICA (O "Cérebro" para não alucinar)
 const catalogoTecnico = {
-    "onix": { litros: 3.5, viscosidade: "5W30", filtroOleo: "PEL676", motor: "1.0/1.4" },
-    "astra": { litros: 4.5, viscosidade: "5W30", filtroOleo: "PSL612", motor: "2.0" },
-    "hb20": { litros: 3.6, viscosidade: "5W30", filtroOleo: "PSL152", motor: "1.0/1.6" },
-    "corolla": { litros: 4.2, viscosidade: "5W30", filtroOleo: "PSL129", motor: "1.8/2.0" }
+    "onix": { litros: 3.5, viscosidade: "5W30", filtroOleo: "PEL676" },
+    "astra": { litros: 4.5, viscosidade: "5W30", filtroOleo: "PSL612" },
+    "hb20": { litros: 3.6, viscosidade: "5W30", filtroOleo: "PSL152" },
+    "corolla": { litros: 4.2, viscosidade: "5W30", filtroOleo: "PSL129" },
+    "gol": { litros: 3.5, viscosidade: "5W40", filtroOleo: "PSL560" }
 };
 
-// 3. FUNÇÃO DE CÁLCULO DE ORÇAMENTO REAL
+// 3. FUNÇÃO DE CÁLCULO DE ORÇAMENTO
 async function gerarOrcamento(textoCliente) {
     try {
         const msg = textoCliente.toLowerCase();
@@ -41,14 +43,14 @@ async function gerarOrcamento(textoCliente) {
             .ilike('produto', `%lubrax%${carro.viscosidade}%`)
             .limit(1);
 
-        // Busca Preço do Filtro de Óleo específico
+        // Busca Preço do Filtro de Óleo
         const { data: filtro } = await supabase
             .from('produtos')
             .select('produto, preco')
             .ilike('produto', `%${carro.filtroOleo}%`)
             .limit(1);
 
-        // Busca Mão de Obra
+        // Busca Mão de Obra (R$ 60,00 da sua planilha)
         const { data: mo } = await supabase
             .from('produtos')
             .select('preco')
@@ -68,7 +70,7 @@ async function gerarOrcamento(textoCliente) {
                    `⚙️ Filtro de Óleo: R$ ${vFiltro.toFixed(2)}\n` +
                    `🔧 Mão de Obra: R$ ${vMO.toFixed(2)}\n\n` +
                    `💰 *TOTAL: R$ ${totalGeral.toFixed(2)}*\n\n` +
-                   `Posso agendar o seu serviço?`;
+                   `Deseja agendar o serviço?`;
         }
         return null;
     } catch (e) {
@@ -77,26 +79,28 @@ async function gerarOrcamento(textoCliente) {
     }
 }
 
-// 4. ROTA DO WEBHOOK (Onde o Twilio envia a mensagem)
+// 4. ROTA DO WEBHOOK (Onde o Twilio se conecta)
 app.post('/whatsapp', async (req, res) => {
-    const msgCliente = req.body.Body;
+    const msgCliente = req.body.Body || "";
     const twiml = new MessagingResponse();
 
-    // Tenta gerar orçamento pelo estoque primeiro
     const orcamento = await gerarOrcamento(msgCliente);
 
     if (orcamento) {
         twiml.message(orcamento);
     } else {
-        // Se não for pedido de orçamento, aqui você chamaria a sua IA (OpenAI)
-        twiml.message("Olá! Sou o assistente da PerfectLub. Para orçamentos, informe o modelo do carro.");
+        // Se não for orçamento, ele responde de forma genérica (ou você liga sua IA aqui)
+        twiml.message("Olá! Sou o assistente da PerfectLub. Para saber o valor da troca, digite o modelo do seu carro.");
     }
 
     res.type('text/xml').send(twiml.toString());
 });
 
-// 5. INICIALIZAÇÃO DO SERVIDOR (Essencial para o Render não fechar)
+// Rota de teste para o Render não dar "Exited Early"
+app.get('/', (req, res) => res.send('Servidor PerfectLub Ativo!'));
+
+// 5. ESCUTA DA PORTA (Essencial para o Render)
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Servidor rodando com sucesso na porta ${PORT}`);
+    console.log(`Servidor rodando na porta ${PORT}`);
 });
