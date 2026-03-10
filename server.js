@@ -9,75 +9,73 @@ const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-/* =====================================================
-CONFIGURAÇÃO E VALIDAÇÃO
-===================================================== */
+/* ===========================
+   CONFIG
+=========================== */
 
 const PORT = process.env.PORT || 10000;
 
 if (!process.env.OPENAI_API_KEY) {
-    console.error("ERRO: OPENAI_API_KEY não configurada");
-    process.exit(1);
+  console.error("❌ OPENAI_API_KEY não configurada");
+  process.exit(1);
 }
 
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
-    console.error("ERRO: Supabase não configurado");
-    process.exit(1);
+  console.error("❌ Supabase não configurado");
+  process.exit(1);
 }
 
 const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
 );
 
 const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY
 });
 
-/* =====================================================
-UTILS
-===================================================== */
+/* ===========================
+   UTILS
+=========================== */
 
-function normalizarTexto(texto) {
-    return texto
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .trim();
+function normalizar(texto) {
+  return texto
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
 }
 
 const saudacoes = [
-    "oi",
-    "ola",
-    "bom dia",
-    "boa tarde",
-    "boa noite",
-    "opa",
-    "e ai",
-    "eae",
-    "boa"
+  "oi",
+  "ola",
+  "bom dia",
+  "boa tarde",
+  "boa noite",
+  "opa",
+  "e ai",
+  "eae",
+  "boa"
 ];
 
-/* =====================================================
-INTELIGÊNCIA (IA)
-===================================================== */
+function detectarPlaca(texto) {
+  const clean = texto.replace(/[^a-zA-Z0-9]/g, "");
+  const regex = /^[a-zA-Z]{3}[0-9][0-9a-zA-Z][0-9]{2}$/;
+  return regex.test(clean);
+}
+
+/* ===========================
+   IA
+=========================== */
 
 async function analisarMensagem(msg) {
-
-    const texto = normalizarTexto(msg);
-
-    if (texto.length < 3 || saudacoes.includes(texto)) {
-        return { tipo: "interacao" };
-    }
-
-    try {
-
-        const prompt = `
-Você é um especialista em lubrificação automotiva da PerfectLub.
+  try {
+    const prompt = `
+Você é especialista em lubrificação automotiva brasileira.
 
 Cliente escreveu: "${msg}"
 
-Retorne JSON com:
+Se for veículo retorne:
 
 {
  "modelo":"Civic G10",
@@ -90,176 +88,182 @@ Retorne JSON com:
  "tipo":"carro"
 }
 
-Se for apenas saudação ou conversa:
+Se não for veículo:
 
 { "tipo":"interacao" }
 
-Se for placa:
-
-{ "tipo":"placa" }
-
-Retorne SOMENTE JSON.
+Retorne somente JSON.
 `;
 
-        const response = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
-            messages: [
-                {
-                    role: "system",
-                    content: "Especialista em manutenção automotiva brasileira."
-                },
-                {
-                    role: "user",
-                    content: prompt
-                }
-            ],
-            response_format: { type: "json_object" },
-        
-        });
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "Especialista em manutenção automotiva brasileira."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
+      response_format: { type: "json_object" }
+    });
 
-        return JSON.parse(response.choices[0].message.content);
+    let dados;
 
-    } catch (err) {
-
-        console.error("Erro IA:", err.message);
-        return null;
-
+    try {
+      dados = JSON.parse(response.choices[0].message.content);
+    } catch {
+      return { tipo: "interacao" };
     }
 
+    return dados;
+
+  } catch (err) {
+    console.log("❌ Erro IA:", err.message);
+    return null;
+  }
 }
 
-/* =====================================================
-ORÇAMENTO
-===================================================== */
+/* ===========================
+   ORÇAMENTO
+=========================== */
 
 async function calcularOrcamento(ficha) {
+  try {
+    const visc = ficha.viscosidade.replace(/[^a-zA-Z0-9]/g, "");
 
-    try {
+    const { data: oleos } = await supabase
+      .from("produtos")
+      .select("produto, preco")
+      .or(`produto.ilike.%${visc}%,produto.ilike.%${ficha.viscosidade}%`)
+      .ilike("produto", "%1L%")
+      .order("preco", { ascending: true })
+      .limit(1);
 
-        const visc = ficha.viscosidade.replace(/[^a-zA-Z0-9]/g, "");
+    const { data: filtros } = await supabase
+      .from("produtos")
+      .select("produto, preco")
+      .ilike("produto", `%${ficha.filtro}%`)
+      .limit(1);
 
-        const { data: oleos } = await supabase
-            .from('produtos')
-            .select('produto, preco')
-            .or(`produto.ilike.%${visc}%,produto.ilike.%${ficha.viscosidade}%`)
-            .ilike('produto', '%1L%')
-            .order('preco', { ascending: true })
-            .limit(1);
+    const { data: mao } = await supabase
+      .from("produtos")
+      .select("preco")
+      .ilike("produto", "%mão de obra%")
+      .limit(1);
 
-        const { data: filtros } = await supabase
-            .from('produtos')
-            .select('produto, preco')
-            .ilike('produto', `%${ficha.filtro}%`)
-            .limit(1);
+    if (!oleos || oleos.length === 0) return null;
 
-        const { data: mao } = await supabase
-            .from('produtos')
-            .select('preco')
-            .ilike('produto', '%mão de obra%')
-            .limit(1);
+    const vLitro = parseFloat(
+      oleos[0].preco.toString().replace(",", ".")
+    );
 
-        if (!oleos || oleos.length === 0) return null;
+    const vFiltro = filtros?.length
+      ? parseFloat(filtros[0].preco.toString().replace(",", "."))
+      : 40;
 
-        const vLitro = parseFloat(
-            oleos[0].preco.toString().replace(",", ".")
-        );
+    const vMO = mao?.length
+      ? parseFloat(mao[0].preco.toString().replace(",", "."))
+      : 70;
 
-        const vFiltro = filtros?.length
-            ? parseFloat(filtros[0].preco.toString().replace(",", "."))
-            : 40;
+    const totalOleo = vLitro * ficha.litros;
+    const total = totalOleo + vFiltro + vMO;
 
-        const vMO = mao?.length
-            ? parseFloat(mao[0].preco.toString().replace(",", "."))
-            : 70;
+    return {
+      oleo: oleos[0].produto,
+      totalOleo,
+      valorFiltro: vFiltro,
+      valorMO: vMO,
+      total
+    };
 
-        const totalOleo = vLitro * ficha.litros;
-
-        const total = totalOleo + vFiltro + vMO;
-
-        return {
-            oleo: oleos[0].produto,
-            totalOleo,
-            valorFiltro: vFiltro,
-            valorMO: vMO,
-            total
-        };
-
-    } catch (err) {
-
-        console.error("Erro orçamento:", err.message);
-        return null;
-
-    }
-
+  } catch (err) {
+    console.log("❌ Erro orçamento:", err.message);
+    return null;
+  }
 }
 
-/* =====================================================
-CONTROLLER WHATSAPP
-===================================================== */
+/* ===========================
+   WHATSAPP
+=========================== */
 
-app.post('/whatsapp', async (req, res) => {
+app.post("/whatsapp", async (req, res) => {
 
-    const twiml = new MessagingResponse();
+  const twiml = new MessagingResponse();
 
-    try {
+  try {
 
-        const msg = (req.body.Body || "").trim();
+    const msg = (req.body.Body || "").trim();
+    const texto = normalizar(msg);
 
-        console.log("Mensagem recebida:", msg);
+    console.log("📩 Mensagem recebida:", msg);
 
-        if (!msg) {
+    if (!msg) {
+      twiml.message("Não consegui entender sua mensagem.");
+      return res.type("text/xml").send(twiml.toString());
+    }
 
-            twiml.message(
-                "Não consegui entender sua mensagem. Pode tentar novamente?"
-            );
+    if (saudacoes.includes(texto)) {
 
-            return res.type('text/xml').send(twiml.toString());
-        }
-
-        const ficha = await analisarMensagem(msg);
-
-        if (!ficha || ficha.tipo === "interacao") {
-
-            twiml.message(
+      twiml.message(
 `Olá! Eu sou o *Lubi* da PerfectLub 🚗
 
-Me diga:
+Me envie:
 
 • modelo e ano do carro
 ou
-• envie a placa
+• a placa do veículo
 
-Que eu calculo a troca de óleo para você.`
-            );
+Que eu calculo a troca de óleo.`
+      );
 
-            return res.type('text/xml').send(twiml.toString());
-        }
+      return res.type("text/xml").send(twiml.toString());
+    }
 
-        if (ficha.tipo === "placa") {
+    if (detectarPlaca(texto)) {
 
-            twiml.message(
-                "Recebi a placa. Vou consultar os dados do veículo. Um momento."
-            );
+      twiml.message(
+`Recebi a placa.
 
-            return res.type('text/xml').send(twiml.toString());
-        }
+Vou consultar os dados do veículo para calcular a troca de óleo.`
+      );
 
-        const orcamento = await calcularOrcamento(ficha);
+      return res.type("text/xml").send(twiml.toString());
+    }
 
-        if (!orcamento) {
+    const ficha = await analisarMensagem(msg);
 
-            twiml.message(
-`Seu veículo utiliza ${ficha.litros}L de ${ficha.viscosidade}.
+    if (!ficha || ficha.tipo === "interacao") {
+
+      twiml.message(
+`Pode me informar o modelo e ano do veículo?
+
+Exemplo:
+
+"Civic 2019 2.0"`
+      );
+
+      return res.type("text/xml").send(twiml.toString());
+    }
+
+    const orcamento = await calcularOrcamento(ficha);
+
+    if (!orcamento) {
+
+      twiml.message(
+`Seu veículo usa ${ficha.litros}L de ${ficha.viscosidade}.
 
 Mas não encontrei esse óleo no sistema agora.
 
-Um consultor da PerfectLub irá verificar para você.`
-            );
+Um consultor da PerfectLub vai verificar para você.`
+      );
 
-            return res.type('text/xml').send(twiml.toString());
-        }
+      return res.type("text/xml").send(twiml.toString());
+    }
 
-        const resposta =
+    const resposta =
 `✅ *ORÇAMENTO PERFECTLUB*
 
 🚘 Veículo: ${ficha.modelo_exato}
@@ -278,42 +282,39 @@ Um consultor da PerfectLub irá verificar para você.`
 
 Deseja agendar a troca?`;
 
-        twiml.message(resposta);
+    twiml.message(resposta);
 
-        console.log("Resposta enviada");
+    res.type("text/xml").send(twiml.toString());
 
-        res.type('text/xml').send(twiml.toString());
+  } catch (err) {
 
-    } catch (err) {
+    console.log("❌ Erro geral:", err);
 
-        console.error("Erro geral:", err);
+    twiml.message(
+      "Sistema temporariamente indisponível. Tente novamente."
+    );
 
-        twiml.message(
-            "O sistema está temporariamente indisponível. Tente novamente em alguns instantes."
-        );
-
-        res.type('text/xml').send(twiml.toString());
-
-    }
+    res.type("text/xml").send(twiml.toString());
+  }
 
 });
 
-/* =====================================================
-ROTAS DE MONITORAMENTO
-===================================================== */
+/* ===========================
+   ROTAS
+=========================== */
 
-app.get('/', (req, res) => {
-    res.send("🚀 Lubi PerfectLub Online");
+app.get("/", (req, res) => {
+  res.send("🚀 Lubi PerfectLub Online");
 });
 
-app.get('/health', (req, res) => {
-    res.json({ status: "ok", service: "lubi-bot" });
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" });
 });
 
-/* =====================================================
-START SERVER
-===================================================== */
+/* ===========================
+   SERVER
+=========================== */
 
 app.listen(PORT, () => {
-    console.log(`🚀 Lubi rodando na porta ${PORT}`);
+  console.log(`🚀 Servidor rodando na porta ${PORT}`);
 });
