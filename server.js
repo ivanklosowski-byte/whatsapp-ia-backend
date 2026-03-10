@@ -1,65 +1,94 @@
 const { createClient } = require('@supabase/supabase-js');
 
-// 1. CONEXÃO COM O BANCO DE DADOS
-// No Render, preencha estas variáveis em "Environment Variables" para maior segurança
-const supabaseUrl = process.env.SUPABASE_URL || 'SUA_URL_DO_SUPABASE';
-const supabaseKey = process.env.SUPABASE_KEY || 'SUA_CHAVE_DO_SUPABASE';
+// 1. CONEXÃO COM O SUPABASE
+const supabaseUrl = process.env.SUPABASE_URL || 'SUA_URL_AQUI';
+const supabaseKey = process.env.SUPABASE_KEY || 'SUA_CHAVE_AQUI';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+// 2. TABELA TÉCNICA (O Cérebro do Bot)
+// Podes adicionar mais carros aqui seguindo o mesmo padrão
+const catalogoTecnico = {
+    "onix": { litros: 3.5, viscosidade: "5W30", filtroOleo: "PEL676", filtroAr: "ARL8830", combustivel: "GI04/7" },
+    "astra": { litros: 4.5, viscosidade: "5W30", filtroOleo: "PSL612", filtroAr: "ARL8825", combustivel: "GI04/7" },
+    "hb20": { litros: 3.6, viscosidade: "5W30", filtroOleo: "PSL152", filtroAr: "ARL2340", combustivel: "GI50/7" },
+    "corolla": { litros: 4.2, viscosidade: "5W30", filtroOleo: "PSL129", filtroAr: "ARL2203", combustivel: "GI04/7" },
+    "gol": { litros: 3.5, viscosidade: "5W40", filtroOleo: "PSL560", filtroAr: "ARL6079", combustivel: "GI04/7" }
+};
+
 /**
- * 2. FUNÇÃO DE BUSCA NO ESTOQUE (1.314 ITENS)
+ * 3. FUNÇÃO PRINCIPAL DE ORÇAMENTO
  */
-async function consultarPrecoNoEstoque(mensagemCliente) {
+async function consultarOrcamento(mensagem) {
     try {
-        // Limpa o texto para focar apenas no produto (ex: "Filtro Astra")
-        const busca = mensagemCliente.toLowerCase()
-            .replace(/bom dia|boa tarde|olá|queria|saber|preço|valor|quanto|custa/gi, '')
-            .trim();
+        const texto = mensagem.toLowerCase();
+        
+        // Identifica o carro na mensagem
+        let carro = null;
+        for (let modelo in catalogoTecnico) {
+            if (texto.includes(modelo)) {
+                carro = { nome: modelo, ...catalogoTecnico[modelo] };
+                break;
+            }
+        }
 
-        if (busca.length < 3) return null;
+        if (!carro) {
+            return "Poderia informar o modelo e motor do carro? (Ex: Onix 1.0, Astra 2.0)";
+        }
 
-        const { data, error } = await supabase
+        // Define a marca de óleo preferida (Padrão: Lubrax)
+        let marcaOleo = "lubrax";
+        if (texto.includes("shell")) marcaOleo = "shell";
+        if (texto.includes("petronas")) marcaOleo = "petronas";
+
+        // BUSCA NO SUPABASE (Preço do Litro)
+        const { data: prodOleo } = await supabase
             .from('produtos')
             .select('produto, preco')
-            .ilike('produto', `%${busca}%`)
-            .limit(4);
+            .ilike('produto', `%${marcaOleo}%${carro.viscosidade}%`)
+            .limit(1);
 
-        if (error) throw error;
+        // BUSCA NO SUPABASE (Preço do Filtro de Óleo)
+        const { data: prodFiltro } = await supabase
+            .from('produtos')
+            .select('produto, preco')
+            .ilike('produto', `%${carro.filtroOleo}%`)
+            .limit(1);
 
-        if (data && data.length > 0) {
-            const itens = data.map(item => {
-                const precoLimpo = item.preco === "0" || !item.preco ? "Consultar Consultor" : `R$ ${item.preco}`;
-                return `⚙️ *${item.produto.trim()}*\n💰 Preço: ${precoLimpo}`;
-            }).join('\n\n');
+        // BUSCA NO SUPABASE (Mão de Obra)
+        const { data: mo } = await supabase
+            .from('produtos')
+            .select('preco')
+            .ilike('produto', '%mão de obra (troca de óleo)%')
+            .single();
 
-            return `Encontrei estes itens na PerfectLub:\n\n${itens}`;
+        if (prodOleo && prodOleo.length > 0 && prodFiltro && prodFiltro.length > 0) {
+            const valorLitro = parseFloat(prodOleo[0].preco);
+            const valorFiltro = parseFloat(prodFiltro[0].preco);
+            const valorMO = parseFloat(mo.preco || 60);
+
+            const totalOleo = valorLitro * carro.litros;
+            const totalGeral = totalOleo + valorFiltro + valorMO;
+
+            let resposta = `✅ *Orçamento PerfectLub: ${carro.nome.toUpperCase()}*\n\n`;
+            resposta += `🛢️ Óleo ${marcaOleo.toUpperCase()} (${carro.litros}L): R$ ${totalOleo.toFixed(2)}\n`;
+            resposta += `⚙️ Filtro de Óleo (${carro.filtroOleo}): R$ ${valorFiltro.toFixed(2)}\n`;
+            resposta += `🔧 Mão de Obra: R$ ${valorMO.toFixed(2)}\n\n`;
+            resposta += `💰 *TOTAL: R$ ${totalGeral.toFixed(2)}*`;
+
+            // Verifica se o cliente quer outros filtros
+            if (texto.includes("completo") || texto.includes("ar")) {
+                resposta += `\n\n_Deseja que eu calcule também os filtros de Ar e Combustível?_`;
+            }
+
+            return resposta;
         }
-        return null;
-    } catch (err) {
-        console.error("Erro Supabase:", err);
-        return null;
+
+        return `Encontrei o ${carro.nome}, mas não localizei o preço de um dos itens no estoque. Gostaria de falar com um consultor?`;
+
+    } catch (error) {
+        console.error("Erro no processamento:", error);
+        return "Tive um problema ao consultar o sistema. Um momento, por favor.";
     }
 }
 
-/**
- * 3. LÓGICA PRINCIPAL DO BOT (ONDE O TWILIO/WHATSAPP RECEBE)
- */
-async function processarMensagemDoBot(msg) {
-    const textoCliente = msg.body;
-
-    // A PRIORIDADE É SEMPRE O SEU ESTOQUE
-    // Se o cliente falar de preço ou peça, o bot consulta a "memória" primeiro
-    const resultadoEstoque = await consultarPrecoNoEstoque(textoCliente);
-
-    if (resultadoEstoque) {
-        // Se achou na planilha, responde direto e para aqui
-        return resultadoEstoque;
-    }
-
-    // Se NÃO achou na planilha, aqui entra a sua IA (OpenAI/Twilio)
-    // Isso evita que a IA invente preços (alucinação)
-    return "Não encontrei esse item exato no sistema. Gostaria de falar com um de nossos mecânicos para um orçamento personalizado?";
-}
-
-// Exporta para o seu sistema de rotas usar
-module.exports = { consultarPrecoNoEstoque, processarMensagemDoBot };
+module.exports = { consultarOrcamento };
