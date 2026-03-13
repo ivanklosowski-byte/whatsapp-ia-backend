@@ -14,7 +14,7 @@ const openai = process.env.OPENAI_API_KEY
   : null;
 
 /**
- * Função IA com Tabela de Preços e Memória de Contexto
+ * Função IA com Memória de Contexto e Tabela de Preços
  */
 async function responderIA(msg, nome) {
   if (!openai) return null;
@@ -26,18 +26,17 @@ async function responderIA(msg, nome) {
           role: "system", 
           content: `Você é o Lubi, o assistente inteligente da PerfectLub em Ponta Grossa.
           
-          TABELA DE PREÇOS ESTIMADOS (Use como referência):
-          - Motores 1.0 (Onix, HB20, Ka, etc): Troca completa a partir de R$ 190,00 a R$ 250,00 (depende do óleo).
-          - Motores 1.4/1.6: A partir de R$ 260,00.
-          - Motores 2.0 ou superior: Sob consulta.
-          - Mão de obra inclusa na troca de óleo.
+          TABELA DE PREÇOS ESTIMADOS (Referência):
+          - Motores 1.0 (Onix, HB20, Ka): Troca completa (Óleo + Filtro) entre R$ 190,00 e R$ 260,00.
+          - Motores 1.4 / 1.6: Entre R$ 270,00 e R$ 340,00.
+          - Motores 2.0 ou superior: A partir de R$ 380,00.
+          *Valores variam conforme a especificação do fabricante (5W30, 0W20, etc).
 
-          DIRETRIZES DE CONVERSA:
-          1. Use o nome do cliente (${nome}).
-          2. ATENÇÃO: Se o cliente já informou o motor na mensagem atual ou anterior, NÃO pergunte novamente.
-          3. Se ele perguntar o preço e você já souber o motor, dê a estimativa da tabela acima.
-          4. Se ele não falou o motor, peça educadamente.
-          5. Finalize sempre convidando para vir à oficina no bairro (ex: Estrela/Uvaranas) ou agendar.`
+          REGRAS DE OURO:
+          1. O cliente já pode ter informado o carro anteriormente. LEIA ATENTAMENTE o contexto.
+          2. Se ele perguntar o preço e já tiver dito o motor (ex: 1.0), dê a estimativa da tabela acima IMEDIATAMENTE.
+          3. NUNCA pergunte o motor se ele acabou de dizer (Ex: Se ele disse "Onix 1.0", você já sabe que é 1.0).
+          4. Seja cordial, use o nome ${nome} e convide para agendar na PerfectLub em Ponta Grossa.`
         },
         { role: "user", content: msg }
       ],
@@ -58,26 +57,28 @@ app.post("/whatsapp", async (req, res) => {
   const mensagem = req.body.Body || "";
   const nomeCliente = req.body.PushName || "amigo(a)";
   
-  console.log(`📩 Mensagem de ${nomeCliente}: ${mensagem}`);
+  // Log para controle no Render
+  console.log(`📩 [${nomeCliente}]: ${mensagem}`);
 
   const texto = mensagem.toLowerCase().trim();
   const saudacoes = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "opa"];
 
   try {
     if (saudacoes.includes(texto)) {
-      twiml.message(`Olá ${nomeCliente}! Bem-vindo à *PerfectLub* 🤖\n\nSou o Lubi! Para te passar o valor certinho da troca de óleo, qual o *carro, motor e ano*?`);
+      twiml.message(`Olá ${nomeCliente}! Bem-vindo à *PerfectLub* 🤖🚗\n\nSou o Lubi! Para eu te passar o valor da troca, qual o *carro, motor e ano*?`);
     } else {
+      // Enviamos a mensagem com um reforço de contexto para a IA não esquecer
       const respostaIA = await responderIA(mensagem, nomeCliente);
       
       if (respostaIA) {
         twiml.message(respostaIA);
       } else {
-        twiml.message(`Opa ${nomeCliente}! Recebi sua mensagem e vou confirmar os valores com nossos técnicos agora mesmo!`);
+        twiml.message(`Opa ${nomeCliente}! Recebi sua mensagem e vou confirmar com os mecânicos agora!`);
       }
     }
   } catch (erro) {
     console.log("❌ Erro:", erro.message);
-    twiml.message("🛠️ O Lubi está ajustando as ferramentas, mas já te respondemos!");
+    twiml.message("🛠️ O Lubi está em manutenção rápida, mas já te respondemos!");
   }
 
   res.type("text/xml").send(twiml.toString());
