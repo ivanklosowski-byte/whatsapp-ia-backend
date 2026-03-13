@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const { MessagingResponse } = require("twilio").twiml;
 const OpenAI = require("openai");
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
@@ -9,81 +10,92 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-const openai = process.env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  : null;
+// Conexão com o seu Supabase (usando as chaves que já estão no seu Render)
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+
+const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 
 /**
- * Função IA com Tabela de Filtros e Venda Adicional
+ * Busca técnica no banco de dados 'produtos'
  */
+async function consultarBanco(termo) {
+  // Fazemos uma busca ampla para pegar óleo, filtros e peças
+  const { data, error } = await supabase
+    .from('produtos')
+    .select('produto, preco')
+    .ilike('produto', `%${termo}%`)
+    .limit(15); // Aumentei o limite para trazer opções de marcas
+
+  if (error) {
+    console.error("❌ Erro Supabase:", error.message);
+    return [];
+  }
+  return data;
+}
+
 async function responderIA(msg, nome) {
   if (!openai) return null;
 
-  try {
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: `Você é o Lubi, o assistente inteligente da PerfectLub em Ponta Grossa.
-          
-          TABELA DE PREÇOS (Estimados):
-          - Troca de Óleo + Filtro Óleo (1.0): R$190 a R$260
-          - Troca de Óleo + Filtro Óleo (1.4/1.6): R$270 a R$340
-          - Troca de Óleo + Filtro Óleo (2.0+): A partir de R$380
-          - Filtro de Ar do Motor: R$40 a R$90 (depende do carro)
-          - Filtro de Cabine (Ar-condicionado): R$40 a R$80
-          - Higienização de Ar-condicionado (Oxi-sanitização): R$80 a R$120
+  // 1. Extração do termo de busca (Carro ou Peça)
+  const extracao = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [{ role: "system", content: "Extraia o nome do carro ou peça para busca em banco de dados. Ex: 'Onix', 'Vela Wega', 'Filtro Tecfil'. Responda apenas o termo principal." }, { role: "user", content: msg }],
+    max_tokens: 20
+  });
 
-          ESTILO DE CONVERSA:
-          1. Nome do cliente: ${nome}.
-          2. Seja direto e vendedor. Se o cliente perguntar de um filtro, informe o preço e ofereça a revisão dos outros filtros também.
-          3. Se falarem de ar-condicionado, ofereça a higienização com Ozônio (é mais saúde para a família).
-          4. Não repita saudações formais se já estiver conversando.
-          5. Objetivo: Agendamento na PerfectLub em Ponta Grossa.`
-        },
-        {
-          role: "user",
-          content: msg
-        }
-      ],
-      max_tokens: 250,
-      temperature: 0.7
-    });
+  const termo = extracao.choices[0].message.content;
+  const dadosProdutos = await consultarBanco(termo);
 
-    return response.choices[0].message.content;
-  } catch (err) {
-    console.log("❌ Erro OpenAI:", err.message);
-    return null;
-  }
+  // 2. Resposta Final baseada na sua Tabela Real
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      {
+        role: "system",
+        content: `Você é o Lubi, Consultor Técnico da PerfectLub em Ponta Grossa.
+        
+        DADOS REAIS DA TABELA 'PRODUTOS':
+        ${JSON.stringify(dadosProdutos)}
+        
+        SUAS REGRAS:
+        1. Se houver dados acima, informe o nome exato do produto e o preço.
+        2. Se o cliente pedir óleo, mostre as opções de viscosidade e marcas (Wega, Tecfil, Petronas, etc) que apareceram na busca.
+        3. Informe que a MÃO DE OBRA para troca de óleo e filtros é um valor fixo (consulte a política da loja).
+        4. Se não encontrar o carro exato, peça o modelo/ano e diga que vai olhar no catálogo físico.
+        5. Seja educado, use o nome ${nome} e convide para o agendamento.`
+      },
+      { role: "user", content: msg }
+    ],
+    max_tokens: 350,
+    temperature: 0 // Zero criatividade, 100% fidelidade aos dados
+  });
+
+  return response.choices[0].message.content;
 }
 
-app.get("/", (req, res) => res.send("🚀 Lubi PerfectLub Online!"));
+app.get("/", (req, res) => res.send("🚀 Lubi PerfectLub conectado ao Supabase!"));
 
 app.post("/whatsapp", async (req, res) => {
   const twiml = new MessagingResponse();
   const mensagem = req.body.Body || "";
   const nomeCliente = req.body.PushName || "amigo";
 
-  console.log(`📩 ${nomeCliente}: ${mensagem}`);
-
   const texto = mensagem.toLowerCase().trim();
   const saudacoes = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "opa"];
 
   try {
     if (saudacoes.includes(texto)) {
-      twiml.message(
-        `Olá ${nomeCliente}! 👋\n\nSou o *Lubi*, assistente da *PerfectLub* 🚗\n\nQual o *modelo, motor e ano* do carro para eu te passar o valor da manutenção agora?`
-      );
+      twiml.message(`Olá ${nomeCliente}! 👋\n\nSou o *Lubi*, seu consultor na *PerfectLub*. Me diga o carro ou a peça que você procura e eu consulto nossa tabela agora!`);
     } else {
       const respostaIA = await responderIA(mensagem, nomeCliente);
-      twiml.message(respostaIA || `Opa! Vou confirmar esse valor com os técnicos e já te respondo.`);
+      twiml.message(respostaIA);
     }
   } catch (erro) {
-    twiml.message(`⚠️ O sistema deu uma pequena falha, mas nossa equipe já está ciente!`);
+    console.error(erro);
+    twiml.message(`Opa, estou consultando o catálogo aqui... já te respondo!`);
   }
 
   res.type("text/xml").send(twiml.toString());
 });
 
-app.listen(PORT, () => console.log("🚀 Servidor rodando na porta:", PORT));
+app.listen(PORT, () => console.log("🚀 Sistema Operacional!"));
