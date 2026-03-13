@@ -9,19 +9,12 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-// Configuração da OpenAI
 const openai = process.env.OPENAI_API_KEY 
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) 
   : null;
 
-if (openai) {
-  console.log("✅ OpenAI conectada e pronta");
-} else {
-  console.log("⚠️ OPENAI_API_KEY não configurada no Render");
-}
-
 /**
- * Função para gerar resposta inteligente (Personalidade PerfectLub)
+ * Função IA com Tabela de Preços e Memória de Contexto
  */
 async function responderIA(msg, nome) {
   if (!openai) return null;
@@ -31,16 +24,20 @@ async function responderIA(msg, nome) {
       messages: [
         { 
           role: "system", 
-          content: `Você é o Lubi, o assistente inteligente da PerfectLub Centro Automotivo em Ponta Grossa.
-          Sua missão é ser tão eficiente e amigável quanto um atendente de pizzaria de sucesso.
+          content: `Você é o Lubi, o assistente inteligente da PerfectLub em Ponta Grossa.
           
-          DIRETRIZES:
-          1. Identidade: Use o nome do cliente (${nome}) para ser pessoal.
-          2. Emojis: Use emojis moderadamente para ser amigável (🚗, 🛢️, ✅, 🥰).
-          3. Fluxo: Se o cliente enviar o carro, agradeça e peça o MOTOR (1.0, 1.6, v6, etc).
-          4. Especialidade: Lembre que somos especialistas em troca de óleo, freios e suspensão em Ponta Grossa.
-          5. Fechamento: Sempre incentive o agendamento: "Podemos reservar um horário para você?"
-          6. Limite: Se não souber algo técnico, diga que vai passar para os mecânicos no balcão.`
+          TABELA DE PREÇOS ESTIMADOS (Use como referência):
+          - Motores 1.0 (Onix, HB20, Ka, etc): Troca completa a partir de R$ 190,00 a R$ 250,00 (depende do óleo).
+          - Motores 1.4/1.6: A partir de R$ 260,00.
+          - Motores 2.0 ou superior: Sob consulta.
+          - Mão de obra inclusa na troca de óleo.
+
+          DIRETRIZES DE CONVERSA:
+          1. Use o nome do cliente (${nome}).
+          2. ATENÇÃO: Se o cliente já informou o motor na mensagem atual ou anterior, NÃO pergunte novamente.
+          3. Se ele perguntar o preço e você já souber o motor, dê a estimativa da tabela acima.
+          4. Se ele não falou o motor, peça educadamente.
+          5. Finalize sempre convidando para vir à oficina no bairro (ex: Estrela/Uvaranas) ou agendar.`
         },
         { role: "user", content: msg }
       ],
@@ -54,16 +51,12 @@ async function responderIA(msg, nome) {
   }
 }
 
-// Rota de teste para ver se o servidor está vivo
-app.get("/", (req, res) => res.send("🚀 Lubi PerfectLub Online e Operante!"));
+app.get("/", (req, res) => res.send("🚀 Lubi PerfectLub Online!"));
 
-/**
- * Webhook Principal do WhatsApp (Twilio)
- */
 app.post("/whatsapp", async (req, res) => {
   const twiml = new MessagingResponse();
   const mensagem = req.body.Body || "";
-  const nomeCliente = req.body.PushName || "amigo(a)"; // Pega o nome real do cliente no Zap
+  const nomeCliente = req.body.PushName || "amigo(a)";
   
   console.log(`📩 Mensagem de ${nomeCliente}: ${mensagem}`);
 
@@ -71,25 +64,22 @@ app.post("/whatsapp", async (req, res) => {
   const saudacoes = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "opa"];
 
   try {
-    // Resposta rápida para saudações (Economiza tempo e dinheiro)
     if (saudacoes.includes(texto)) {
-      twiml.message(`Olá ${nomeCliente}! Bem-vindo à *PerfectLub* 🤖🚗\n\nEu sou o Lubi! Para agilizar seu orçamento, qual o *modelo, motor e ano* do seu carro?`);
+      twiml.message(`Olá ${nomeCliente}! Bem-vindo à *PerfectLub* 🤖\n\nSou o Lubi! Para te passar o valor certinho da troca de óleo, qual o *carro, motor e ano*?`);
     } else {
-      // Processa o restante com a IA turbinada
       const respostaIA = await responderIA(mensagem, nomeCliente);
       
       if (respostaIA) {
         twiml.message(respostaIA);
       } else {
-        twiml.message(`Opa ${nomeCliente}! Recebi sua mensagem. Em breve um de nossos especialistas da PerfectLub vai te responder por aqui! 🥰`);
+        twiml.message(`Opa ${nomeCliente}! Recebi sua mensagem e vou confirmar os valores com nossos técnicos agora mesmo!`);
       }
     }
   } catch (erro) {
-    console.log("❌ Erro no processamento:", erro.message);
-    twiml.message("🛠️ O Lubi está em manutenção rápida, mas nossa equipe já foi avisada do seu contato!");
+    console.log("❌ Erro:", erro.message);
+    twiml.message("🛠️ O Lubi está ajustando as ferramentas, mas já te respondemos!");
   }
 
-  // Envia a resposta formatada para o Twilio
   res.type("text/xml").send(twiml.toString());
 });
 
