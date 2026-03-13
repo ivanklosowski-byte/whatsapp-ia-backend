@@ -15,22 +15,37 @@ const openai = process.env.OPENAI_API_KEY
   : null;
 
 if (openai) {
-  console.log("✅ OpenAI conectada");
+  console.log("✅ OpenAI conectada e pronta");
 } else {
   console.log("⚠️ OPENAI_API_KEY não configurada no Render");
 }
 
-// Função de resposta com proteção contra travamentos
-async function responderIA(msg) {
+/**
+ * Função para gerar resposta inteligente (Personalidade PerfectLub)
+ */
+async function responderIA(msg, nome) {
   if (!openai) return null;
   try {
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "Você é um especialista em manutenção automotiva brasileira da oficina PerfectLub. Seja direto e prestativo." },
+        { 
+          role: "system", 
+          content: `Você é o Lubi, o assistente inteligente da PerfectLub Centro Automotivo em Ponta Grossa.
+          Sua missão é ser tão eficiente e amigável quanto um atendente de pizzaria de sucesso.
+          
+          DIRETRIZES:
+          1. Identidade: Use o nome do cliente (${nome}) para ser pessoal.
+          2. Emojis: Use emojis moderadamente para ser amigável (🚗, 🛢️, ✅, 🥰).
+          3. Fluxo: Se o cliente enviar o carro, agradeça e peça o MOTOR (1.0, 1.6, v6, etc).
+          4. Especialidade: Lembre que somos especialistas em troca de óleo, freios e suspensão em Ponta Grossa.
+          5. Fechamento: Sempre incentive o agendamento: "Podemos reservar um horário para você?"
+          6. Limite: Se não souber algo técnico, diga que vai passar para os mecânicos no balcão.`
+        },
         { role: "user", content: msg }
       ],
-      max_tokens: 200 // Limita o tamanho para ser mais rápido
+      max_tokens: 250,
+      temperature: 0.7
     });
     return response.choices[0].message.content;
   } catch (err) {
@@ -39,36 +54,43 @@ async function responderIA(msg) {
   }
 }
 
-app.get("/", (req, res) => res.send("🚀 Servidor PerfectLub rodando"));
+// Rota de teste para ver se o servidor está vivo
+app.get("/", (req, res) => res.send("🚀 Lubi PerfectLub Online e Operante!"));
 
-// Webhook Principal
+/**
+ * Webhook Principal do WhatsApp (Twilio)
+ */
 app.post("/whatsapp", async (req, res) => {
   const twiml = new MessagingResponse();
   const mensagem = req.body.Body || "";
-  console.log("📩 Mensagem recebida:", mensagem);
+  const nomeCliente = req.body.PushName || "amigo(a)"; // Pega o nome real do cliente no Zap
+  
+  console.log(`📩 Mensagem de ${nomeCliente}: ${mensagem}`);
 
   const texto = mensagem.toLowerCase().trim();
-  const saudacoes = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite"];
+  const saudacoes = ["oi", "ola", "olá", "bom dia", "boa tarde", "boa noite", "opa"];
 
   try {
+    // Resposta rápida para saudações (Economiza tempo e dinheiro)
     if (saudacoes.includes(texto)) {
-      twiml.message("Olá 👋\n\nSou o assistente da *PerfectLub*.\n\nEnvie o modelo e ano do seu carro para orçamento de troca de óleo.\n\nExemplo: *Civic 2019*");
+      twiml.message(`Olá ${nomeCliente}! Bem-vindo à *PerfectLub* 🤖🚗\n\nEu sou o Lubi! Para agilizar seu orçamento, qual o *modelo, motor e ano* do seu carro?`);
     } else {
-      // Chama a IA mas com um tempo limite interno
-      const respostaIA = await responderIA(mensagem);
+      // Processa o restante com a IA turbinada
+      const respostaIA = await responderIA(mensagem, nomeCliente);
       
       if (respostaIA) {
         twiml.message(respostaIA);
       } else {
-        twiml.message(`Recebi sua mensagem: "${mensagem}".\n\nEm breve um atendente da PerfectLub irá responder.`);
+        twiml.message(`Opa ${nomeCliente}! Recebi sua mensagem. Em breve um de nossos especialistas da PerfectLub vai te responder por aqui! 🥰`);
       }
     }
   } catch (erro) {
-    console.log("❌ Erro webhook:", erro.message);
-    twiml.message("⚠️ Sistema em manutenção, mas já recebemos seu contato!");
+    console.log("❌ Erro no processamento:", erro.message);
+    twiml.message("🛠️ O Lubi está em manutenção rápida, mas nossa equipe já foi avisada do seu contato!");
   }
 
+  // Envia a resposta formatada para o Twilio
   res.type("text/xml").send(twiml.toString());
 });
 
-app.listen(PORT, () => console.log("🚀 Servidor rodando na porta", PORT));
+app.listen(PORT, () => console.log(`🚀 Servidor rodando na porta ${PORT}`));
