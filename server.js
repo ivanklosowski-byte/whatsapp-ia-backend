@@ -1,7 +1,8 @@
 require("dotenv").config();
+
 const express = require("express");
 const { MessagingResponse } = require("twilio").twiml;
-const OpenAI = require("openai");
+const { OpenAI } = require("openai");
 const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
@@ -11,222 +12,225 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
+/* =============================
+CONFIGURAÇÕES
+============================= */
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
 );
 
-const openai = process.env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  : null;
+/* =============================
+SALVAR HISTÓRICO
+============================= */
 
+async function salvarHistorico(phone, role, content) {
 
+  try {
 
+    await supabase
+      .from("historico_mensagens")
+      .insert([
+        {
+          phone_number: phone,
+          role: role,
+          content: content
+        }
+      ]);
 
+  } catch (error) {
 
-// ============================
-// CONSULTAR BANCO
-// ============================
+    console.log("Erro ao salvar histórico:", error);
 
-async function consultarBanco(termo) {
+  }
 
-  if (!termo) return [];
+}
 
-  const termoLimpo = termo.split(" ")[0];
+/* =============================
+BUSCAR PRODUTO
+============================= */
 
-  const { data, error } = await supabase
-    .from("produtos")
-    .select("produto, preco")
-    .ilike("produto", `%${termoLimpo}%`)
-    .limit(20);
+async function buscarProduto(termo) {
 
-  if (error) {
-    console.error("Erro Supabase:", error);
+  try {
+
+    const { data, error } = await supabase
+      .from("produtos")
+      .select("produto, preco, categoria")
+      .or(`produto.ilike.%${termo}%,categoria.ilike.%${termo}%`)
+      .limit(5);
+
+    if (error) {
+      console.log(error);
+      return [];
+    }
+
+    return data;
+
+  } catch (err) {
+
+    console.log(err);
     return [];
+
   }
 
-  return data || [];
 }
 
+/* =============================
+FORMATAR PRODUTOS
+============================= */
 
+function formatarProdutos(lista) {
 
-
-
-// ============================
-// RESPOSTA IA
-// ============================
-
-async function responderIA(msg, nome) {
-
-  if (!openai) return null;
-
-  try {
-
-    // IA extrai o termo de busca
-    const extracao = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: `
-Extraia da mensagem do cliente o que ele procura.
-
-Se for troca de óleo responda apenas:
-óleo
-
-Se for peça responda apenas o nome da peça.
-
-Responda apenas uma palavra.
-`
-        },
-        { role: "user", content: msg }
-      ],
-      max_tokens: 20,
-      temperature: 0
-    });
-
-    const termo =
-      extracao?.choices?.[0]?.message?.content?.trim() || msg;
-
-    const dadosProdutos = await consultarBanco(termo);
-
-
-
-
-    // IA gera resposta
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: `
-Você é o Lubi, consultor técnico da PerfectLub em Ponta Grossa.
-
-Nome do cliente: ${nome}
-
-PRODUTOS DISPONÍVEIS NO BANCO:
-${JSON.stringify(dadosProdutos)}
-
-REGRAS IMPORTANTES:
-
-- Use SOMENTE produtos da lista acima
-- Nunca invente preços
-- Se a lista estiver vazia diga que irá consultar o estoque
-- Seja objetivo
-- Formate como orçamento simples
-
-Exemplo:
-
-🔧 ORÇAMENTO PERFECTLUB
-
-Óleo sugerido: [nome] - [preço]
-
-Filtro de óleo: [nome] - [preço]
-
-Mão de obra: valor fixo à parte
-
-Finalize perguntando se pode reservar horário.
-`
-        },
-        { role: "user", content: msg }
-      ],
-      max_tokens: 300,
-      temperature: 0
-    });
-
-    return response?.choices?.[0]?.message?.content || null;
-
-  } catch (erro) {
-
-    console.error("Erro OpenAI:", erro);
+  if (!lista || lista.length === 0) {
     return null;
-
   }
+
+  let resposta = "🔧 PRODUTOS ENCONTRADOS\n\n";
+
+  lista.forEach(p => {
+
+    resposta += `${p.produto}\n`;
+    resposta += `💰 R$ ${p.preco}\n\n`;
+
+  });
+
+  resposta += "Deseja reservar ou instalar na PerfectLub?";
+
+  return resposta;
+
 }
 
+/* =============================
+IA LUBI
+============================= */
 
-
-
-
-// ============================
-// SERVIDOR ONLINE
-// ============================
-
-app.get("/", (req, res) => {
-  res.send("🚀 Lubi PerfectLub Online");
-});
-
-
-
-
-
-// ============================
-// WEBHOOK WHATSAPP
-// ============================
-
-app.post("/whatsapp", async (req, res) => {
-
-  const twiml = new MessagingResponse();
-
-  const mensagem = req.body.Body || "";
-  const nomeCliente = req.body.PushName || "amigo";
-
-  if (!mensagem) {
-    return res.sendStatus(200);
-  }
-
-  const texto = mensagem.toLowerCase().trim();
-
-  const saudacoes = [
-    "oi",
-    "ola",
-    "olá",
-    "bom dia",
-    "boa tarde",
-    "boa noite"
-  ];
-
-
+async function responderIA(pergunta) {
 
   try {
 
+    const resposta = await openai.chat.completions.create({
 
+      model: "gpt-4o-mini",
 
+      messages: [
+        {
+          role: "system",
+          content: `
+Você é Lubi, consultor da PerfectLub Centro Automotivo.
 
-    // =========================
-    // SAUDAÇÃO
-    // =========================
+Responda de forma curta e clara.
 
-    if (saudacoes.includes(texto)) {
+Se perguntarem sobre troca de óleo ou peças,
+peça sempre:
 
-      twiml.message(
-`Olá ${nomeCliente}! 👋
+marca
+modelo
+ano
 
-Sou o *Lubi*, consultor da *PerfectLub*.
+Se pedirem endereço responda:
+
+PerfectLub Centro Automotivo
+Ponta Grossa - PR
+`
+        },
+        {
+          role: "user",
+          content: pergunta
+        }
+      ]
+
+    });
+
+    return resposta.choices[0].message.content;
+
+  } catch (error) {
+
+    console.log("Erro OpenAI:", error);
+
+    return "Desculpe, tive um problema ao responder agora.";
+
+  }
+
+}
+
+/* =============================
+MENU INICIAL
+============================= */
+
+function menuInicial() {
+
+  return `Olá amigo! 👋
+
+Sou o Lubi, consultor da PerfectLub.
 
 Como posso ajudar?
 
 1️⃣ Troca de óleo  
 2️⃣ Orçamento de peça  
 3️⃣ Diagnóstico de problema  
-4️⃣ Endereço`
-      );
+4️⃣ Endereço`;
 
-      return res.type("text/xml").send(twiml.toString());
-    }
+}
 
+/* =============================
+WEBHOOK WHATSAPP
+============================= */
 
+app.post("/whatsapp", async (req, res) => {
 
+  const mensagem = req.body.Body?.toLowerCase() || "";
+  const phone = req.body.From;
 
+  const twiml = new MessagingResponse();
 
-    // =========================
-    // TROCA DE ÓLEO
-    // =========================
+  await salvarHistorico(phone, "user", mensagem);
 
-    if (texto.includes("oleo") || texto.includes("óleo")) {
+  let resposta = "";
 
-      twiml.message(
-`Perfeito! Fazemos troca de óleo. 🔧
+  /* SAUDAÇÃO */
+
+  if (
+    mensagem === "oi" ||
+    mensagem === "olá" ||
+    mensagem === "ola" ||
+    mensagem.includes("bom dia")
+  ) {
+
+    resposta = menuInicial();
+
+  }
+
+  /* ENDEREÇO */
+
+  else if (
+    mensagem === "4" ||
+    mensagem.includes("endereco")
+  ) {
+
+    resposta = `📍 PerfectLub Centro Automotivo
+
+Ponta Grossa - PR
+
+Horário:
+Segunda a Sexta
+08:00 às 18:00`;
+
+  }
+
+  /* TROCA DE ÓLEO */
+
+  else if (
+    mensagem === "1" ||
+    mensagem.includes("oleo")
+  ) {
+
+    resposta = `🔧 Troca de óleo PerfectLub
 
 Para indicar o óleo correto me diga:
 
@@ -237,76 +241,55 @@ Para indicar o óleo correto me diga:
 Exemplo:
 Onix 2019
 HB20 2020
-Gol 2015`
-      );
+Gol 2015`;
 
-      return res.type("text/xml").send(twiml.toString());
-    }
-
-
-
-
-
-    // =========================
-    // ENDEREÇO
-    // =========================
-
-    if (texto.includes("endereco") || texto.includes("endereço")) {
-
-      twiml.message(
-`📍 PerfectLub Centro Automotivo
-
-Ponta Grossa - PR
-
-Clique para abrir no mapa:
-https://maps.google.com`
-      );
-
-      return res.type("text/xml").send(twiml.toString());
-    }
-
-
-
-
-
-    // =========================
-    // IA
-    // =========================
-
-    const respostaIA = await responderIA(mensagem, nomeCliente);
-
-    twiml.message(
-      respostaIA ||
-        "Estou consultando nosso catálogo técnico. Pode repetir a pergunta?"
-    );
-
-
-
-
-
-  } catch (erro) {
-
-    console.error("Erro geral:", erro);
-
-    twiml.message(
-      "Opa! Estou consultando o catálogo técnico... tente novamente em instantes."
-    );
   }
 
-  res.type("text/xml").send(twiml.toString());
+  /* BUSCAR PRODUTO */
+
+  else {
+
+    const produtos = await buscarProduto(mensagem);
+
+    const respostaProdutos = formatarProdutos(produtos);
+
+    if (respostaProdutos) {
+
+      resposta = respostaProdutos;
+
+    } else {
+
+      resposta = await responderIA(mensagem);
+
+    }
+
+  }
+
+  await salvarHistorico(phone, "assistant", resposta);
+
+  twiml.message(resposta);
+
+  res.type("text/xml");
+  res.send(twiml.toString());
 
 });
 
+/* =============================
+ROTA TESTE
+============================= */
 
+app.get("/", (req, res) => {
 
+  res.send("Servidor PerfectLub rodando ✅ Webhook WhatsApp ativo");
 
+});
 
-// ============================
-// INICIAR SERVIDOR
-// ============================
+/* =============================
+START
+============================= */
 
 app.listen(PORT, () => {
 
-  console.log("🚀 Lubi PerfectLub rodando na porta", PORT);
+  console.log(`Servidor rodando na porta ${PORT}`);
 
 });
