@@ -1,295 +1,213 @@
-require("dotenv").config();
+require("dotenv").config()
 
-const express = require("express");
-const { MessagingResponse } = require("twilio").twiml;
-const { OpenAI } = require("openai");
-const { createClient } = require("@supabase/supabase-js");
+const express = require("express")
+const { MessagingResponse } = require("twilio").twiml
+const { OpenAI } = require("openai")
+const { createClient } = require("@supabase/supabase-js")
 
-const app = express();
+const app = express()
 
-app.use(express.urlencoded({ extended: false }));
-app.use(express.json());
+app.use(express.urlencoded({ extended: false }))
+app.use(express.json())
 
-const PORT = process.env.PORT || 10000;
-
-/* =============================
-CONFIGURAÇÕES
-============================= */
+const PORT = process.env.PORT || 10000
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+ apiKey: process.env.OPENAI_API_KEY
+})
 
 const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
-);
+ process.env.SUPABASE_URL,
+ process.env.SUPABASE_ANON_KEY
+)
 
-/* =============================
-SALVAR HISTÓRICO
-============================= */
+/* =======================
+BUSCAR CONTEXTO
+======================= */
 
-async function salvarHistorico(phone, role, content) {
+async function buscarContexto(phone){
 
-  try {
+ const { data } = await supabase
+ .from("clientes_contexto")
+ .select("*")
+ .eq("telefone",phone)
+ .limit(1)
 
-    await supabase
-      .from("historico_mensagens")
-      .insert([
-        {
-          phone_number: phone,
-          role: role,
-          content: content
-        }
-      ]);
+ return data?.[0] || null
+}
 
-  } catch (error) {
+/* =======================
+SALVAR CONTEXTO
+======================= */
 
-    console.log("Erro ao salvar histórico:", error);
+async function salvarContexto(phone,carro,assunto){
 
-  }
+ await supabase
+ .from("clientes_contexto")
+ .upsert({
+ telefone:phone,
+ carro:carro,
+ ultimo_assunto:assunto
+ })
 
 }
 
-/* =============================
+/* =======================
 BUSCAR PRODUTO
-============================= */
+======================= */
 
-async function buscarProduto(termo) {
+async function buscarProduto(termo){
 
-  try {
+ const { data } = await supabase
+ .from("produtos")
+ .select("produto,preco,categoria")
+ .or(`produto.ilike.%${termo}%,categoria.ilike.%${termo}%`)
+ .limit(5)
 
-    const { data, error } = await supabase
-      .from("produtos")
-      .select("produto, preco, categoria")
-      .or(`produto.ilike.%${termo}%,categoria.ilike.%${termo}%`)
-      .limit(5);
-
-    if (error) {
-      console.log(error);
-      return [];
-    }
-
-    return data;
-
-  } catch (err) {
-
-    console.log(err);
-    return [];
-
-  }
+ return data || []
 
 }
 
-/* =============================
-FORMATAR PRODUTOS
-============================= */
+/* =======================
+FORMATAR PRODUTO
+======================= */
 
-function formatarProdutos(lista) {
+function formatarProdutos(lista){
 
-  if (!lista || lista.length === 0) {
-    return null;
-  }
+ if(lista.length===0) return null
 
-  let resposta = "🔧 PRODUTOS ENCONTRADOS\n\n";
+ let resposta="🔧 PRODUTOS ENCONTRADOS\n\n"
 
-  lista.forEach(p => {
+ lista.forEach(p=>{
 
-    resposta += `${p.produto}\n`;
-    resposta += `💰 R$ ${p.preco}\n\n`;
+ resposta+=`${p.produto}\n`
+ resposta+=`💰 R$ ${p.preco}\n\n`
 
-  });
+ })
 
-  resposta += "Deseja reservar ou instalar na PerfectLub?";
+ resposta+="Deseja instalar na PerfectLub?"
 
-  return resposta;
+ return resposta
 
 }
 
-/* =============================
-IA LUBI
-============================= */
+/* =======================
+MENU
+======================= */
 
-async function responderIA(pergunta) {
+function menu(){
 
-  try {
+ return `Olá 👋
 
-    const resposta = await openai.chat.completions.create({
-
-      model: "gpt-4o-mini",
-
-      messages: [
-        {
-          role: "system",
-          content: `
-Você é Lubi, consultor da PerfectLub Centro Automotivo.
-
-Responda de forma curta e clara.
-
-Se perguntarem sobre troca de óleo ou peças,
-peça sempre:
-
-marca
-modelo
-ano
-
-Se pedirem endereço responda:
-
-PerfectLub Centro Automotivo
-Ponta Grossa - PR
-`
-        },
-        {
-          role: "user",
-          content: pergunta
-        }
-      ]
-
-    });
-
-    return resposta.choices[0].message.content;
-
-  } catch (error) {
-
-    console.log("Erro OpenAI:", error);
-
-    return "Desculpe, tive um problema ao responder agora.";
-
-  }
-
-}
-
-/* =============================
-MENU INICIAL
-============================= */
-
-function menuInicial() {
-
-  return `Olá amigo! 👋
-
-Sou o Lubi, consultor da PerfectLub.
+Sou o Lubi da PerfectLub.
 
 Como posso ajudar?
 
-1️⃣ Troca de óleo  
-2️⃣ Orçamento de peça  
-3️⃣ Diagnóstico de problema  
-4️⃣ Endereço`;
+1️⃣ Troca de óleo
+2️⃣ Orçamento de peça
+3️⃣ Diagnóstico
+4️⃣ Endereço`
 
 }
 
-/* =============================
-WEBHOOK WHATSAPP
-============================= */
+/* =======================
+WEBHOOK
+======================= */
 
-app.post("/whatsapp", async (req, res) => {
+app.post("/whatsapp", async (req,res)=>{
 
-  const mensagem = req.body.Body?.toLowerCase() || "";
-  const phone = req.body.From;
+ const mensagem=req.body.Body?.toLowerCase()||""
+ const phone=req.body.From
 
-  const twiml = new MessagingResponse();
+ const twiml=new MessagingResponse()
 
-  await salvarHistorico(phone, "user", mensagem);
+ let resposta=""
 
-  let resposta = "";
+ const contexto=await buscarContexto(phone)
 
-  /* SAUDAÇÃO */
+/* SAUDAÇÃO */
 
-  if (
-    mensagem === "oi" ||
-    mensagem === "olá" ||
-    mensagem === "ola" ||
-    mensagem.includes("bom dia")
-  ) {
+ if(mensagem.includes("oi") || mensagem.includes("bom dia")){
 
-    resposta = menuInicial();
+ resposta=menu()
 
-  }
+ }
 
-  /* ENDEREÇO */
+/* TROCA OLEO */
 
-  else if (
-    mensagem === "4" ||
-    mensagem.includes("endereco")
-  ) {
+ else if(mensagem==="1" || mensagem.includes("oleo")){
 
-    resposta = `📍 PerfectLub Centro Automotivo
+ resposta=`🔧 Troca de óleo
 
-Ponta Grossa - PR
+Me diga:
 
-Horário:
-Segunda a Sexta
-08:00 às 18:00`;
+marca modelo ano
 
-  }
+Ex:
+Onix 2013`
 
-  /* TROCA DE ÓLEO */
+ await salvarContexto(phone,null,"oleo")
 
-  else if (
-    mensagem === "1" ||
-    mensagem.includes("oleo")
-  ) {
+ }
 
-    resposta = `🔧 Troca de óleo PerfectLub
+/* CLIENTE ENVIOU CARRO */
 
-Para indicar o óleo correto me diga:
+ else if(mensagem.includes("onix") || mensagem.includes("gol") || mensagem.includes("hb20")){
 
-🚗 Marca  
-🚗 Modelo  
-🚗 Ano
+ await salvarContexto(phone,mensagem,"oleo")
 
-Exemplo:
-Onix 2019
-HB20 2020
-Gol 2015`;
+ resposta=`Perfeito 👍
 
-  }
+Para ${mensagem} recomendamos:
 
-  /* BUSCAR PRODUTO */
+Óleo 5W30 Dexos
+Filtro de óleo
 
-  else {
+Deseja orçamento completo?`
 
-    const produtos = await buscarProduto(mensagem);
+ }
 
-    const respostaProdutos = formatarProdutos(produtos);
+/* BUSCA PRODUTO */
 
-    if (respostaProdutos) {
+ else{
 
-      resposta = respostaProdutos;
+ const produtos=await buscarProduto(mensagem)
 
-    } else {
+ const respostaProduto=formatarProdutos(produtos)
 
-      resposta = await responderIA(mensagem);
+ if(respostaProduto){
 
-    }
+ resposta=respostaProduto
 
-  }
+ }
 
-  await salvarHistorico(phone, "assistant", resposta);
+ else{
 
-  twiml.message(resposta);
+ resposta="Pode me explicar melhor o que você precisa?"
 
-  res.type("text/xml");
-  res.send(twiml.toString());
+ }
 
-});
+ }
 
-/* =============================
-ROTA TESTE
-============================= */
+ twiml.message(resposta)
 
-app.get("/", (req, res) => {
+ res.type("text/xml")
+ res.send(twiml.toString())
 
-  res.send("Servidor PerfectLub rodando ✅ Webhook WhatsApp ativo");
+})
 
-});
+/* =======================
+SERVIDOR
+======================= */
 
-/* =============================
-START
-============================= */
+app.get("/",(req,res)=>{
 
-app.listen(PORT, () => {
+ res.send("Servidor PerfectLub rodando")
 
-  console.log(`Servidor rodando na porta ${PORT}`);
+})
 
-});
+app.listen(PORT,()=>{
+
+ console.log("Servidor rodando")
+
+})
