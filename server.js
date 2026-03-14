@@ -2,8 +2,8 @@ require("dotenv").config()
 
 const express = require("express")
 const { MessagingResponse } = require("twilio").twiml
-const { OpenAI } = require("openai")
 const { createClient } = require("@supabase/supabase-js")
+const { OpenAI } = require("openai")
 
 const app = express()
 
@@ -21,56 +21,77 @@ const supabase = createClient(
  process.env.SUPABASE_ANON_KEY
 )
 
-/* =======================
-BUSCAR CONTEXTO
-======================= */
+/* =========================
+DETECTAR CARRO
+========================= */
 
-async function buscarContexto(phone){
+function detectarCarro(msg){
 
- const { data } = await supabase
- .from("clientes_contexto")
- .select("*")
- .eq("telefone",phone)
- .limit(1)
+ if(msg.includes("onix")) return "onix"
+ if(msg.includes("gol")) return "gol"
+ if(msg.includes("hb20")) return "hb20"
 
- return data?.[0] || null
+ return null
 }
 
-/* =======================
-SALVAR CONTEXTO
-======================= */
+/* =========================
+ÓLEO RECOMENDADO
+========================= */
 
-async function salvarContexto(phone,carro,assunto){
+function oleoRecomendado(carro){
 
- await supabase
- .from("clientes_contexto")
- .upsert({
- telefone:phone,
- carro:carro,
- ultimo_assunto:assunto
- })
+ if(carro==="onix"){
+
+ return `🔧 Troca de óleo PerfectLub
+
+Veículo: Chevrolet Onix
+
+Óleo recomendado:
+5W30 Dexos
+
+Itens da troca:
+
+• Óleo
+• Filtro de óleo
+
+Deseja orçamento completo?`
+ }
+
+ if(carro==="gol"){
+
+ return `🔧 Troca de óleo
+
+Veículo: Gol
+
+Óleo recomendado:
+5W40
+
+Deseja orçamento?`
+ }
+
+ return null
 
 }
 
-/* =======================
+/* =========================
 BUSCAR PRODUTO
-======================= */
+========================= */
 
 async function buscarProduto(termo){
 
  const { data } = await supabase
  .from("produtos")
- .select("produto,preco,categoria")
- .or(`produto.ilike.%${termo}%,categoria.ilike.%${termo}%`)
+ .select("produto,preco")
+ .ilike("produto",`%${termo}%`)
  .limit(5)
 
  return data || []
 
 }
 
-/* =======================
-FORMATAR PRODUTO
-======================= */
+/* =========================
+FORMATAR PRODUTOS
+========================= */
 
 function formatarProdutos(lista){
 
@@ -85,19 +106,17 @@ function formatarProdutos(lista){
 
  })
 
- resposta+="Deseja instalar na PerfectLub?"
-
  return resposta
 
 }
 
-/* =======================
+/* =========================
 MENU
-======================= */
+========================= */
 
 function menu(){
 
- return `Olá 👋
+ return `Olá amigo! 👋
 
 Sou o Lubi da PerfectLub.
 
@@ -110,80 +129,100 @@ Como posso ajudar?
 
 }
 
-/* =======================
-WEBHOOK
-======================= */
+/* =========================
+IA (somente fallback)
+========================= */
 
-app.post("/whatsapp", async (req,res)=>{
+async function respostaIA(msg){
+
+ const response = await openai.chat.completions.create({
+
+ model:"gpt-4o-mini",
+
+ messages:[
+ {
+ role:"system",
+ content:"Você é atendente de oficina mecânica. Responda curto."
+ },
+ {
+ role:"user",
+ content:msg
+ }
+ ]
+
+ })
+
+ return response.choices[0].message.content
+
+}
+
+/* =========================
+WHATSAPP
+========================= */
+
+app.post("/whatsapp",async(req,res)=>{
 
  const mensagem=req.body.Body?.toLowerCase()||""
- const phone=req.body.From
 
  const twiml=new MessagingResponse()
 
  let resposta=""
 
- const contexto=await buscarContexto(phone)
-
 /* SAUDAÇÃO */
 
- if(mensagem.includes("oi") || mensagem.includes("bom dia")){
+ if(
+ mensagem.includes("oi")||
+ mensagem.includes("ola")||
+ mensagem.includes("bom dia")
+ ){
 
  resposta=menu()
 
  }
 
-/* TROCA OLEO */
+/* MENU TROCA OLEO */
 
- else if(mensagem==="1" || mensagem.includes("oleo")){
+ else if(mensagem==="1"){
 
  resposta=`🔧 Troca de óleo
 
-Me diga:
+Informe o veículo:
 
-marca modelo ano
-
-Ex:
-Onix 2013`
-
- await salvarContexto(phone,null,"oleo")
+Exemplo:
+Onix 2013
+Gol 2016`
 
  }
 
-/* CLIENTE ENVIOU CARRO */
+/* DETECTAR CARRO */
 
- else if(mensagem.includes("onix") || mensagem.includes("gol") || mensagem.includes("hb20")){
+ else{
 
- await salvarContexto(phone,mensagem,"oleo")
+ const carro=detectarCarro(mensagem)
 
- resposta=`Perfeito 👍
+ if(carro){
 
-Para ${mensagem} recomendamos:
-
-Óleo 5W30 Dexos
-Filtro de óleo
-
-Deseja orçamento completo?`
+ resposta=oleoRecomendado(carro)
 
  }
-
-/* BUSCA PRODUTO */
 
  else{
 
  const produtos=await buscarProduto(mensagem)
 
- const respostaProduto=formatarProdutos(produtos)
+ const respostaProdutos=formatarProdutos(produtos)
 
- if(respostaProduto){
+ if(respostaProdutos){
 
- resposta=respostaProduto
+ resposta=respostaProdutos
 
  }
 
  else{
 
- resposta="Pode me explicar melhor o que você precisa?"
+ resposta=await respostaIA(mensagem)
+
+ }
 
  }
 
@@ -196,13 +235,13 @@ Deseja orçamento completo?`
 
 })
 
-/* =======================
+/* =========================
 SERVIDOR
-======================= */
+========================= */
 
 app.get("/",(req,res)=>{
 
- res.send("Servidor PerfectLub rodando")
+ res.send("Servidor PerfectLub rodando ✅")
 
 })
 
