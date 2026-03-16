@@ -17,7 +17,7 @@ app.post("/whatsapp", async (req, res) => {
     const twiml = new MessagingResponse();
 
     try {
-        // 1. MEMÓRIA: Recupera o histórico para a Lubi não esquecer o carro do cliente
+        // 1. MEMÓRIA: Puxa o histórico (Onix 2013)
         const { data: historico } = await supabase
             .from("historico_messages")
             .select("role, content")
@@ -30,73 +30,60 @@ app.post("/whatsapp", async (req, res) => {
             content: h.content
         })) || [];
 
-        // 2. IA ESPECIALISTA: Define a parte técnica e o que buscar no estoque
-        const promptIA = [
-            { 
-                role: "system", 
-                content: `Você é a Lubi, consultora técnica sênior da PerfectLub em Ponta Grossa.
-                Sua missão é dar orçamentos educados e técnicos.
-
-                FORMATO DE RESPOSTA:
-                - Se souber o carro: Explique o óleo (viscosidade, norma tipo Dexos 1, litros).
-                - Identifique o termo de busca para o banco (ex: "5W30" ou "Filtro Onix").
-                - Se NÃO souber o carro: Peça educadamente o modelo, ano e motor.
-                - NUNCA repita saudações como "Boa tarde" se já estiver no histórico.
-
-                Retorne JSON: {"intro_tecnica": "string", "termo_busca": "string", "dica_especialista": "string", "carro_identificado": "string"}` 
-            },
-            ...contextoAnterior,
-            { role: "user", content: incomingMsg }
-        ];
-
+        // 2. IA TÉCNICA: Extrai apenas o que precisamos buscar
         const aiResponse = await openai.chat.completions.create({
             model: "gpt-4o",
-            messages: promptIA,
+            messages: [
+                { 
+                    role: "system", 
+                    content: `Você é um mecânico especialista da PerfectLub. 
+                    Analise a conversa e retorne APENAS um JSON com:
+                    "termo_busca": (ex: '5W30' ou 'Filtro Onix'),
+                    "info_tecnica": (ex: 'o manual exige óleo 5W30 Dexos 1, 3.5 litros'),
+                    "carro": (ex: 'Onix 1.0 2013'),
+                    "precisa_pedir_dados": (true se não souber o carro ainda)` 
+                },
+                ...contextoAnterior,
+                { role: "user", content: incomingMsg }
+            ],
             response_format: { type: "json_object" }
         });
 
         const analise = JSON.parse(aiResponse.choices[0].message.content);
 
-        // 3. CONSULTA E CÁLCULO: Puxa preços reais e soma com a mão de obra
-        let listaItens = "";
-        let somaProdutos = 0;
-        const maoDeObra = 70.00;
-
-        if (analise.termo_busca) {
-            const { data: produtos } = await supabase
-                .from("produtos")
-                .select("descricao, preco")
-                .ilike("descricao", `%${analise.termo_busca}%`)
-                .limit(3);
-
-            if (produtos && produtos.length > 0) {
-                produtos.forEach(p => {
-                    listaItens += `🔧 ${p.descricao}: R$ ${p.preco.toLocaleString('pt-BR', {minimumFractionDigits: 2})}\n`;
-                    somaProdutos += p.preco;
-                });
-            }
+        if (analise.precisa_pedir_dados) {
+            const msgFaltaDados = "Boa tarde! Com certeza, para eu te passar o valor exato agora, poderia me dizer o modelo, motor e ano do seu carro?";
+            twiml.message(msgFaltaDados);
+            return res.status(200).send(twiml.toString());
         }
 
-        // 4. MONTAGEM DA RESPOSTA (IGUAL AO SEU MODELO APROVADO)
-        let respostaFinal = "";
-        
-        if (!analise.termo_busca) {
-            // Se ainda não temos o carro, apenas pede a informação
-            respostaFinal = analise.intro_tecnica;
-        } else {
-            // Se já temos o carro, monta o orçamento completo
-            const totalGeral = (somaProdutos + maoDeObra).toLocaleString('pt-BR', {minimumFractionDigits: 2});
-            
-            respostaFinal = `Boa tarde! Com certeza, para o seu ${analise.carro_identificado}, ${analise.intro_tecnica}\n\n` +
+        // 3. BUSCA NO BANCO: Agora buscamos os produtos ANTES de montar a resposta
+        const { data: produtos } = await supabase
+            .from("produtos")
+            .select("descricao, preco")
+            .ilike("descricao", `%${analise.termo_busca}%`)
+            .limit(4);
+
+        let listaProdutosTexto = "";
+        let somaTotal = 70.00; // Mão de obra fixa
+
+        if (produtos && produtos.length > 0) {
+            produtos.forEach(p => {
+                listaProdutosTexto += `🔧 ${p.descricao}: R$ ${p.preco.toLocaleString('pt-BR', {minimumFractionDigits: 2})}\n`;
+                somaTotal += p.preco;
+            });
+        }
+
+        // 4. MONTAGEM DO ORÇAMENTO (O modelo que você aprovou)
+        const respostaFinal = `Boa tarde! Com certeza, para o seu ${analise.carro}, ${analise.info_tecnica}.\n\n` +
             `Fiz um levantamento aqui no nosso estoque agora e os valores ficam assim:\n` +
-            `${listaItens}` +
-            `🔧 Mão de obra especializada: R$ ${maoDeObra.toLocaleString('pt-BR', {minimumFractionDigits: 2})}\n\n` +
-            `*Total aproximado: R$ ${totalGeral}*\n\n` +
-            `*Dica de especialista:* ${analise.dica_especialista}\n\n` +
+            `${listaProdutosTexto}` +
+            `🔧 Mão de obra especializada: R$ 70,00\n\n` +
+            `*Total aproximado: R$ ${somaTotal.toLocaleString('pt-BR', {minimumFractionDigits: 2})}*\n\n` +
+            `*Dica de especialista:* Além do óleo, recomendo verificarmos também os filtros de combustível e ar do motor para manter o consumo baixo.\n\n` +
             `Temos horário livre para essa tarde aqui na oficina em Ponta Grossa. Vamos agendar?`;
-        }
 
-        // 5. SALVA NO HISTÓRICO PARA A PRÓXIMA MENSAGEM
+        // 5. SALVA NO HISTÓRICO
         await supabase.from("historico_messages").insert([
             { phone_number: sender, role: 'user', content: incomingMsg },
             { phone_number: sender, role: 'assistant', content: respostaFinal }
@@ -106,7 +93,7 @@ app.post("/whatsapp", async (req, res) => {
 
     } catch (err) {
         console.error(err);
-        twiml.message("Boa tarde! Para eu te passar o valor exato agora, poderia me dizer o modelo e ano do seu carro?");
+        twiml.message("Boa tarde! Poderia me confirmar o modelo e ano do seu carro para eu calcular o valor?");
     }
 
     res.writeHead(200, { "Content-Type": "text/xml" });
