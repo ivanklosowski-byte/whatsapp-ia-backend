@@ -8,7 +8,6 @@ const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-// Conexões com as chaves que você configurou no Render
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -18,7 +17,7 @@ app.post("/whatsapp", async (req, res) => {
     const twiml = new MessagingResponse();
 
     try {
-        // 1. MEMÓRIA: Recupera as últimas 6 mensagens para não ser repetitivo
+        // 1. MEMÓRIA: Puxa o histórico para saber que já estamos falando do Onix 2013
         const { data: historico } = await supabase
             .from("historico_messages")
             .select("role, content")
@@ -31,55 +30,54 @@ app.post("/whatsapp", async (req, res) => {
             content: h.content
         })) || [];
 
-        // 2. RACIOCÍNIO TÉCNICO: A IA age como o manual do carro
+        // 2. IA TÉCNICA: Define o óleo e gera o termo de busca para o banco
         const promptIA = [
             { 
                 role: "system", 
-                content: `Você é o Lubi, consultor técnico sênior da PerfectLub em Ponta Grossa.
-                Sua missão é converter a fala do cliente em uma solução técnica.
+                content: `Você é o Lubi da PerfectLub. 
+                Seu objetivo é vender a troca de óleo e filtros.
                 
                 REGRAS:
-                - Se o cliente já disse o carro no histórico, NÃO pergunte de novo.
-                - Use seu conhecimento para identificar o óleo (ex: 5W30) e filtros (ar, óleo, combustível) para o carro citado.
-                - No campo "busca", coloque apenas termos técnicos (ex: "5W30", "Filtro Onix").
-                - Seja vendedor: Sugira sempre a troca de todos os filtros.
+                - Se o cliente perguntou o valor e você já sabe o carro, identifique o óleo técnico (ex: 5W30).
+                - Use o campo "termo_busca" para colocar a viscosidade ou modelo (ex: "5W30" ou "Filtro Onix").
+                - Seja proativo: sugira filtros de ar e combustível.
                 
-                Retorne APENAS este JSON:
-                {"resposta": "Sua fala técnica e vendedora", "busca": "termo para o banco"}` 
+                Retorne JSON: {"resposta": "Sua explicação técnica", "termo_busca": "termo para o banco"}` 
             },
             ...contextoAnterior,
             { role: "user", content: incomingMsg }
         ];
 
         const aiResponse = await openai.chat.completions.create({
-            model: "gpt-4o", // Modelo potente para entender manuais
+            model: "gpt-4o",
             messages: promptIA,
             response_format: { type: "json_object" }
         });
 
         const analise = JSON.parse(aiResponse.choices[0].message.content);
 
-        // 3. CONSULTA NO ESTOQUE: Busca os preços reais dos seus 1.300 itens
-        let itensEstoque = "";
-        if (analise.busca) {
+        // 3. CONSULTA REAL NO SEU ESTOQUE (1.300+ itens)
+        let listaPrecos = "";
+        if (analise.termo_busca) {
             const { data: produtos } = await supabase
                 .from("produtos")
                 .select("descricao, preco")
-                .ilike("descricao", `%${analise.busca}%`)
-                .limit(4);
+                .ilike("descricao", `%${analise.termo_busca}%`)
+                .limit(5);
 
             if (produtos?.length > 0) {
-                itensEstoque = "\n\n📋 Valores em estoque:\n";
+                listaPrecos = "\n\n💰 *Confira os valores em nosso estoque:* \n";
                 produtos.forEach(p => {
                     const preco = p.preco.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-                    itensEstoque += `▪️ ${p.descricao}: R$ ${preco}\n`;
+                    listaPrecos += `▪️ ${p.descricao}: *R$ ${preco}*\n`;
                 });
+                listaPrecos += "\n*Mão de obra especializada:* R$ 70,00";
             }
         }
 
-        const respostaFinal = analise.resposta + itensEstoque;
+        const respostaFinal = analise.resposta + listaPrecos;
 
-        // 4. SALVAR HISTÓRICO: Garante que a Lubi aprenda com a conversa
+        // 4. SALVAR HISTÓRICO
         await supabase.from("historico_messages").insert([
             { phone_number: sender, role: 'user', content: incomingMsg },
             { phone_number: sender, role: 'assistant', content: respostaFinal }
@@ -88,8 +86,8 @@ app.post("/whatsapp", async (req, res) => {
         twiml.message(respostaFinal);
 
     } catch (err) {
-        console.error("Erro Técnico:", err);
-        twiml.message("Estou consultando nossos manuais técnicos para te dar a resposta exata, um momento...");
+        console.error(err);
+        twiml.message("Estou consultando a tabela de preços para o seu veículo...");
     }
 
     res.writeHead(200, { "Content-Type": "text/xml" });
