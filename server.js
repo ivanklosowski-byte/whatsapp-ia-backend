@@ -8,6 +8,7 @@ const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
+// Conexões com as chaves que você configurou no Render
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -17,7 +18,7 @@ app.post("/whatsapp", async (req, res) => {
     const twiml = new MessagingResponse();
 
     try {
-        // PILAR 1: MEMÓRIA - Buscar o que já foi dito
+        // 1. MEMÓRIA: Recupera as últimas 6 mensagens para não ser repetitivo
         const { data: historico } = await supabase
             .from("historico_messages")
             .select("role, content")
@@ -25,58 +26,60 @@ app.post("/whatsapp", async (req, res) => {
             .order("created_at", { ascending: false })
             .limit(6);
 
-        const mensagensContexto = historico?.reverse().map(h => ({
-            role: h.role,
+        const contextoAnterior = historico?.reverse().map(h => ({
+            role: h.role === 'assistant' ? 'assistant' : 'user',
             content: h.content
         })) || [];
 
-        // PILAR 2 & 3: RACIOCÍNIO E INTENÇÃO
+        // 2. RACIOCÍNIO TÉCNICO: A IA age como o manual do carro
         const promptIA = [
             { 
                 role: "system", 
-                content: `Você é o Lubi, consultor técnico da PerfectLub. 
-                Sua tarefa é ser um especialista em manutenção automotiva.
+                content: `Você é o Lubi, consultor técnico sênior da PerfectLub em Ponta Grossa.
+                Sua missão é converter a fala do cliente em uma solução técnica.
                 
-                LOGICA:
-                1. Se faltar modelo, ano ou motor, peça essas informações.
-                2. Se você já tem os dados, identifique o óleo e filtros corretos pelo seu conhecimento de manual.
-                3. Sugira SEMPRE a troca completa (Óleo + Filtro Óleo + Ar + Combustível).
+                REGRAS:
+                - Se o cliente já disse o carro no histórico, NÃO pergunte de novo.
+                - Use seu conhecimento para identificar o óleo (ex: 5W30) e filtros (ar, óleo, combustível) para o carro citado.
+                - No campo "busca", coloque apenas termos técnicos (ex: "5W30", "Filtro Onix").
+                - Seja vendedor: Sugira sempre a troca de todos os filtros.
                 
-                Responda em JSON:
-                {"resposta": "Sua fala para o cliente", "busca_banco": "termo técnico para pesquisar no estoque"}` 
+                Retorne APENAS este JSON:
+                {"resposta": "Sua fala técnica e vendedora", "busca": "termo para o banco"}` 
             },
-            ...mensagensContexto,
+            ...contextoAnterior,
             { role: "user", content: incomingMsg }
         ];
 
         const aiResponse = await openai.chat.completions.create({
-            model: "gpt-4o",
+            model: "gpt-4o", // Modelo potente para entender manuais
             messages: promptIA,
             response_format: { type: "json_object" }
         });
 
         const analise = JSON.parse(aiResponse.choices[0].message.content);
 
-        // CONVERSÃO PARA SUA TABELA DE PREÇOS
-        let resultadoEstoque = "";
-        if (analise.busca_banco) {
+        // 3. CONSULTA NO ESTOQUE: Busca os preços reais dos seus 1.300 itens
+        let itensEstoque = "";
+        if (analise.busca) {
             const { data: produtos } = await supabase
                 .from("produtos")
                 .select("descricao, preco")
-                .ilike("descricao", `%${analise.busca_banco}%`)
+                .ilike("descricao", `%${analise.busca}%`)
                 .limit(4);
 
             if (produtos?.length > 0) {
-                resultadoEstoque = "\n\n📋 Preços na PerfectLub:\n";
+                itensEstoque = "\n\n📋 Valores em estoque:\n";
                 produtos.forEach(p => {
-                    resultadoEstoque += `▪️ ${p.descricao}: R$ ${p.preco.toLocaleString('pt-BR')}\n`;
+                    const preco = p.preco.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+                    itensEstoque += `▪️ ${p.descricao}: R$ ${preco}\n`;
                 });
             }
         }
 
-        const respostaFinal = analise.resposta + resultadoEstoque;
+        const respostaFinal = analise.resposta + itensEstoque;
 
-        // SALVAR PARA NÃO ESQUECER NA PRÓXIMA MENSAGEM
+        // 4. SALVAR HISTÓRICO: Garante que a Lubi aprenda com a conversa
         await supabase.from("historico_messages").insert([
             { phone_number: sender, role: 'user', content: incomingMsg },
             { phone_number: sender, role: 'assistant', content: respostaFinal }
@@ -85,8 +88,8 @@ app.post("/whatsapp", async (req, res) => {
         twiml.message(respostaFinal);
 
     } catch (err) {
-        console.error(err);
-        twiml.message("Estou analisando o manual técnico do seu veículo...");
+        console.error("Erro Técnico:", err);
+        twiml.message("Estou consultando nossos manuais técnicos para te dar a resposta exata, um momento...");
     }
 
     res.writeHead(200, { "Content-Type": "text/xml" });
