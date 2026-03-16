@@ -17,7 +17,7 @@ app.post("/whatsapp", async (req, res) => {
     const twiml = new MessagingResponse();
 
     try {
-        // 1. MEMÓRIA: Carrega o histórico para saber o carro e o que já foi dito
+        // 1. MEMÓRIA: Recupera o histórico para a Lubi não esquecer o carro do cliente
         const { data: historico } = await supabase
             .from("historico_messages")
             .select("role, content")
@@ -30,22 +30,20 @@ app.post("/whatsapp", async (req, res) => {
             content: h.content
         })) || [];
 
-        // 2. IA CONSULTORA: Gera a resposta técnica e o termo de busca
+        // 2. IA ESPECIALISTA: Define a parte técnica e o que buscar no estoque
         const promptIA = [
             { 
                 role: "system", 
                 content: `Você é a Lubi, consultora técnica sênior da PerfectLub em Ponta Grossa.
-                Sua missão é vender a troca completa (Óleo + Todos os Filtros).
+                Sua missão é dar orçamentos educados e técnicos.
 
-                ESTILO DE RESPOSTA:
-                - Use o tom: "Boa tarde! Com certeza, para o seu [Carro], o manual exige o óleo [Viscosidade]..."
-                - Informe detalhes técnicos (ex: Dexos 1 para Onix, quantidade de litros).
-                - Sugira sempre verificar filtros de AR e COMBUSTÍVEL para economia de combustível.
-                - Termine sempre convidando para agendar na oficina em Ponta Grossa.
-                
-                Retorne APENAS JSON:
-                {"termo_busca": "termo para o estoque", "intro_tecnica": "Sua explicação inicial", "sugestao_venda": "Sua dica de especialista"}
-                ` 
+                FORMATO DE RESPOSTA:
+                - Se souber o carro: Explique o óleo (viscosidade, norma tipo Dexos 1, litros).
+                - Identifique o termo de busca para o banco (ex: "5W30" ou "Filtro Onix").
+                - Se NÃO souber o carro: Peça educadamente o modelo, ano e motor.
+                - NUNCA repita saudações como "Boa tarde" se já estiver no histórico.
+
+                Retorne JSON: {"intro_tecnica": "string", "termo_busca": "string", "dica_especialista": "string", "carro_identificado": "string"}` 
             },
             ...contextoAnterior,
             { role: "user", content: incomingMsg }
@@ -59,9 +57,9 @@ app.post("/whatsapp", async (req, res) => {
 
         const analise = JSON.parse(aiResponse.choices[0].message.content);
 
-        // 3. BUSCA NO ESTOQUE: Puxa os preços reais
-        let listaProdutos = "";
-        let totalProdutos = 0;
+        // 3. CONSULTA E CÁLCULO: Puxa preços reais e soma com a mão de obra
+        let listaItens = "";
+        let somaProdutos = 0;
         const maoDeObra = 70.00;
 
         if (analise.termo_busca) {
@@ -69,26 +67,36 @@ app.post("/whatsapp", async (req, res) => {
                 .from("produtos")
                 .select("descricao, preco")
                 .ilike("descricao", `%${analise.termo_busca}%`)
-                .limit(4);
+                .limit(3);
 
-            if (produtos?.length > 0) {
-                listaProdutos = "\n\nFiz um levantamento aqui no nosso estoque agora:\n";
+            if (produtos && produtos.length > 0) {
                 produtos.forEach(p => {
-                    const preco = p.preco.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-                    listaProdutos += `🔧 ${p.descricao}: R$ ${preco}\n`;
-                    totalProdutos += p.preco;
+                    listaItens += `🔧 ${p.descricao}: R$ ${p.preco.toLocaleString('pt-BR', {minimumFractionDigits: 2})}\n`;
+                    somaProdutos += p.preco;
                 });
-                listaProdutos += `🔧 Mão de obra especializada: R$ ${maoDeObra.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}\n`;
-                
-                const totalGeral = (totalProdutos + maoDeObra).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-                listaProdutos += `\n💰 *Total aproximado: R$ ${totalGeral}*`;
             }
         }
 
-        // 4. MONTAGEM DA RESPOSTA FINAL (IGUAL AO QUE VOCÊ PEDIU)
-        const respostaFinal = `${analise.intro_tecnica}${listaProdutos}\n\n💡 *Dica de especialista:* ${analise.sugestao_venda}\n\nTemos horário livre para essa tarde aqui na oficina em Ponta Grossa. Vamos agendar?`;
+        // 4. MONTAGEM DA RESPOSTA (IGUAL AO SEU MODELO APROVADO)
+        let respostaFinal = "";
+        
+        if (!analise.termo_busca) {
+            // Se ainda não temos o carro, apenas pede a informação
+            respostaFinal = analise.intro_tecnica;
+        } else {
+            // Se já temos o carro, monta o orçamento completo
+            const totalGeral = (somaProdutos + maoDeObra).toLocaleString('pt-BR', {minimumFractionDigits: 2});
+            
+            respostaFinal = `Boa tarde! Com certeza, para o seu ${analise.carro_identificado}, ${analise.intro_tecnica}\n\n` +
+            `Fiz um levantamento aqui no nosso estoque agora e os valores ficam assim:\n` +
+            `${listaItens}` +
+            `🔧 Mão de obra especializada: R$ ${maoDeObra.toLocaleString('pt-BR', {minimumFractionDigits: 2})}\n\n` +
+            `*Total aproximado: R$ ${totalGeral}*\n\n` +
+            `*Dica de especialista:* ${analise.dica_especialista}\n\n` +
+            `Temos horário livre para essa tarde aqui na oficina em Ponta Grossa. Vamos agendar?`;
+        }
 
-        // 5. SALVA NO BANCO
+        // 5. SALVA NO HISTÓRICO PARA A PRÓXIMA MENSAGEM
         await supabase.from("historico_messages").insert([
             { phone_number: sender, role: 'user', content: incomingMsg },
             { phone_number: sender, role: 'assistant', content: respostaFinal }
@@ -98,7 +106,7 @@ app.post("/whatsapp", async (req, res) => {
 
     } catch (err) {
         console.error(err);
-        twiml.message("Boa tarde! Estou consultando a ficha técnica do seu veículo e nossa tabela de preços, um momento...");
+        twiml.message("Boa tarde! Para eu te passar o valor exato agora, poderia me dizer o modelo e ano do seu carro?");
     }
 
     res.writeHead(200, { "Content-Type": "text/xml" });
