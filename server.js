@@ -17,7 +17,7 @@ app.post("/whatsapp", async (req, res) => {
     const twiml = new MessagingResponse();
 
     try {
-        // 1. RECUPERA TODO O HISTÓRICO RECENTE (A memória do especialista)
+        // 1. Recupera o histórico para ter memória (evita repetir perguntas)
         const { data: historico } = await supabase
             .from("historico_messages")
             .select("role, content")
@@ -30,40 +30,32 @@ app.post("/whatsapp", async (req, res) => {
             content: h.content
         })) || [];
 
-        // 2. O PROMPT DO ESPECIALISTA (Onde a mágica acontece)
+        // 2. Prompt do Especialista
         const mensagensParaIA = [
             { 
                 role: "system", 
-                content: `Você é o Lubi, o consultor técnico sênior da PerfectLub em Ponta Grossa. 
+                content: `Você é o Lubi, consultor técnico sênior da PerfectLub. 
                 Sua missão é dar orçamentos precisos de troca de óleo e filtros.
-
-                DIRETRIZES DE ESPECIALISTA:
-                - NÃO SEJA REPETITIVO. Se o cliente já disse o carro, NUNCA pergunte de novo.
-                - SEJA TÉCNICO: Se o cliente falar "Onix 1.0", você sabe que o óleo é 5W30 Dexos 1. Use isso para buscar no banco.
-                - BUSCA NO BANCO: Extraia o termo técnico (ex: "5W30", "Filtro Onix", "PSL55") para pesquisar na planilha de produtos.
-                - SE FALTA INFO: Se ele não disse o motor ou ano, peça de forma natural, ex: "Para o Onix temos dois tipos de filtro, qual o ano do seu?"
-
-                Retorne APENAS um JSON:
-                {
-                  "termo_busca": "termo para o SQL ilike",
-                  "resposta_cliente": "Sua resposta técnica e direta",
-                  "carro_detectado": "Modelo/Ano/Motor"
-                }` 
+                DIRETRIZES:
+                - NÃO REPITA PERGUNTAS. Se o histórico já tem o carro, não pergunte de novo.
+                - SEJA TÉCNICO: Converta o carro do cliente em termos de busca (ex: 5W30, Filtro Onix).
+                - Use um tom profissional e prestativo de Ponta Grossa.
+                Retorne JSON: {"termo_busca": "string", "resposta_cliente": "string"}` 
             },
             ...memoriaConversa,
             { role: "user", content: incomingMsg }
         ];
 
         const aiResponse = await openai.chat.completions.create({
-            model: "gpt-4o", // O modelo mais inteligente para evitar repetições
+            model: "gpt-4o",
             messages: mensagensParaIA,
             response_format: { type: "json_object" }
         });
 
         const analise = JSON.parse(aiResponse.choices[0].message.content);
 
-        // 3. BUSCA DINÂMICA NO SEU ESTOQUE (1.300+ itens)
-        let produtosResposta = "";
+        // 3. Busca no seu estoque de 1.300 itens
+        let produtosExtras = "";
         if (analise.termo_busca) {
             const { data: produtos } = await supabase
                 .from("produtos")
@@ -72,16 +64,17 @@ app.post("/whatsapp", async (req, res) => {
                 .limit(3);
 
             if (produtos?.length > 0) {
-                produtosResposta = "\n\n📋 Opções em estoque:\n";
+                produtosExtras = "\n\n📋 Opções em estoque:\n";
                 produtos.forEach(p => {
-                    produtosResposta += `▪️ ${p.descricao}: R$ ${p.preco.toLocaleString('pt-BR', {minimumFractionDigits: 2})}\n`;
+                    const valor = p.preco.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+                    produtosExtras += `▪️ ${p.descricao}: R$ ${valor}\n`;
                 });
             }
         }
 
-        const respostaFinal = analise.resposta_cliente + produtosResposta;
+        const respostaFinal = analise.resposta_cliente + produtosExtras;
 
-        // 4. SALVAR HISTÓRICO (Essencial para não repetir perguntas)
+        // 4. Salva no histórico
         await supabase.from("historico_messages").insert([
             { phone_number: sender, role: 'user', content: incomingMsg },
             { phone_number: sender, role: 'assistant', content: respostaFinal }
@@ -90,12 +83,15 @@ app.post("/whatsapp", async (req, res) => {
         twiml.message(respostaFinal);
 
     } catch (err) {
-        console.error(err);
-        twiml.message("Estou consultando nossos manuais técnicos, um momento...");
+        console.error("Erro interno:", err);
+        twiml.message("Estou verificando nossos manuais técnicos, um momento...");
     }
 
     res.writeHead(200, { "Content-Type": "text/xml" });
     res.end(twiml.toString());
 });
 
-app.listen(process.env.PORT || 10000);
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+    console.log(`Servidor PerfectLub ativo na porta ${PORT} ✅`);
+});
