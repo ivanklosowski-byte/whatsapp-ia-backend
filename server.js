@@ -17,7 +17,7 @@ app.post("/whatsapp", async (req, res) => {
     const twiml = new MessagingResponse();
 
     try {
-        // 1. MEMÓRIA: Recupera o que foi conversado antes para não repetir perguntas
+        // PILAR 1: MEMÓRIA - Buscar o que já foi dito
         const { data: historico } = await supabase
             .from("historico_messages")
             .select("role, content")
@@ -25,58 +25,58 @@ app.post("/whatsapp", async (req, res) => {
             .order("created_at", { ascending: false })
             .limit(6);
 
-        const contextoAnterior = historico?.reverse().map(h => ({
-            role: h.role === 'assistant' ? 'assistant' : 'user',
+        const mensagensContexto = historico?.reverse().map(h => ({
+            role: h.role,
             content: h.content
         })) || [];
 
-        // 2. IA TÉCNICA: O "Manual do Mecânico"
+        // PILAR 2 & 3: RACIOCÍNIO E INTENÇÃO
         const promptIA = [
             { 
                 role: "system", 
-                content: `Você é o Lubi, consultor técnico sênior da PerfectLub. 
-                Sua tarefa é identificar o carro e sugerir os produtos corretos.
-
-                REGRAS DE OURO:
-                - Se o carro (Modelo, Ano, Motor) não foi identificado no histórico ou agora, PEÇA ESSAS INFORMAÇÕES de forma educada.
-                - Se você já sabe o carro, use seu conhecimento técnico para definir o óleo (ex: 5W30) e filtros.
-                - SEMPRE sugira a troca dos filtros de ar, combustível e cabine junto com o óleo.
-                - Retorne APENAS um JSON: 
-                {"busca": "termo técnico para o banco", "resposta": "texto para o cliente", "completo": true/false}` 
+                content: `Você é o Lubi, consultor técnico da PerfectLub. 
+                Sua tarefa é ser um especialista em manutenção automotiva.
+                
+                LOGICA:
+                1. Se faltar modelo, ano ou motor, peça essas informações.
+                2. Se você já tem os dados, identifique o óleo e filtros corretos pelo seu conhecimento de manual.
+                3. Sugira SEMPRE a troca completa (Óleo + Filtro Óleo + Ar + Combustível).
+                
+                Responda em JSON:
+                {"resposta": "Sua fala para o cliente", "busca_banco": "termo técnico para pesquisar no estoque"}` 
             },
-            ...contextoAnterior,
+            ...mensagensContexto,
             { role: "user", content: incomingMsg }
         ];
 
         const aiResponse = await openai.chat.completions.create({
-            model: "gpt-4o", // O 4o é melhor para manuais e lógica
+            model: "gpt-4o",
             messages: promptIA,
             response_format: { type: "json_object" }
         });
 
         const analise = JSON.parse(aiResponse.choices[0].message.content);
 
-        // 3. CONSULTA NA TABELA DE PREÇOS (O que você tem no Supabase)
-        let produtosEstoque = "";
-        if (analise.busca) {
+        // CONVERSÃO PARA SUA TABELA DE PREÇOS
+        let resultadoEstoque = "";
+        if (analise.busca_banco) {
             const { data: produtos } = await supabase
                 .from("produtos")
                 .select("descricao, preco")
-                .ilike("descricao", `%${analise.busca}%`)
+                .ilike("descricao", `%${analise.busca_banco}%`)
                 .limit(4);
 
             if (produtos?.length > 0) {
-                produtosEstoque = "\n\n📋 Valores no nosso sistema:\n";
+                resultadoEstoque = "\n\n📋 Preços na PerfectLub:\n";
                 produtos.forEach(p => {
-                    const valor = p.preco.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
-                    produtosEstoque += `▪️ ${p.descricao}: R$ ${valor}\n`;
+                    resultadoEstoque += `▪️ ${p.descricao}: R$ ${p.preco.toLocaleString('pt-BR')}\n`;
                 });
             }
         }
 
-        const respostaFinal = analise.resposta + produtosEstoque;
+        const respostaFinal = analise.resposta + resultadoEstoque;
 
-        // 4. SALVA TUDO PARA A PRÓXIMA MENSAGEM
+        // SALVAR PARA NÃO ESQUECER NA PRÓXIMA MENSAGEM
         await supabase.from("historico_messages").insert([
             { phone_number: sender, role: 'user', content: incomingMsg },
             { phone_number: sender, role: 'assistant', content: respostaFinal }
@@ -86,7 +86,7 @@ app.post("/whatsapp", async (req, res) => {
 
     } catch (err) {
         console.error(err);
-        twiml.message("Estou verificando os manuais para o seu veículo, um momento...");
+        twiml.message("Estou analisando o manual técnico do seu veículo...");
     }
 
     res.writeHead(200, { "Content-Type": "text/xml" });
